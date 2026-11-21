@@ -74,6 +74,15 @@ int wmain(int argc, wchar_t** argv) {
         pk::writeFileAtomic(modelsDir / L"scale2.0x_model.param", kDummy);
         pk::writeFileAtomic(modelsDir / L"scale2.0x_model.bin", kDummy);
 
+        // 0. Verify GUI settings panel creates full interactive controls (never blank!)
+        MemeStudioBytesV2 guiRes{}, guiErr{};
+        if (plugin.desc->invoke_command(plugin.instance, "configure", "{}", nullptr, nullptr, &guiRes, &guiErr) != 0 ||
+            env.lastOpenedPanelChildCount < 14) {
+            std::cerr << "waifu2x panel blank! children=" << env.lastOpenedPanelChildCount << "\n";
+            return 1;
+        }
+        helper.consumeBytesToString(guiRes);
+
         // 1. Regression check: Non-existent exe path MUST be rejected even when input/output toggles are false!
         MemeStudioBytesV2 outRes{};
         MemeStudioBytesV2 outErr{};

@@ -400,6 +400,143 @@ struct Waifu2xPlugin {
     }
 };
 
+enum WaifuPanelId : int {
+    IdExeEdit       = 3201,
+    IdBrowseExeBtn  = 3202,
+    IdModEdit       = 3203,
+    IdBrowseModBtn  = 3204,
+    IdInCheck       = 3205,
+    IdOutCheck      = 3206,
+    IdTtaCheck      = 3207,
+    IdScaleCombo    = 3208,
+    IdNoiseCombo    = 3209,
+    IdTileEdit      = 3210,
+    IdGpuEdit       = 3211,
+    IdTimeoutEdit   = 3212,
+    IdSaveBtn       = 3213,
+    IdCancelBtn     = 3214
+};
+
+struct Waifu2xPanelState {
+    Waifu2xPlugin* plugin = nullptr;
+    HWND hwnd = nullptr;
+    HFONT font = nullptr;
+    HWND exeEdit = nullptr, modEdit = nullptr;
+    HWND inCheck = nullptr, outCheck = nullptr, ttaCheck = nullptr;
+    HWND scaleCombo = nullptr, noiseCombo = nullptr;
+    HWND tileEdit = nullptr, gpuEdit = nullptr, timeoutEdit = nullptr;
+
+    ~Waifu2xPanelState() {
+        if (font) DeleteObject(font);
+    }
+
+    static intptr_t MEMESTUDIO_CALL wndProc(void* ctx, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
+        auto* st = static_cast<Waifu2xPanelState*>(ctx);
+        HWND w = static_cast<HWND>(rawHwnd);
+        if (msg == WM_CREATE) {
+            st->hwnd = w;
+            pk::PanelBuilder ui(w);
+            st->font = pk::createDpiUiFont(ui.dpi().dpi, 14);
+
+            UpscaleSettings cur;
+            {
+                std::lock_guard lk(st->plugin->mutex);
+                cur = st->plugin->settings;
+            }
+
+            ui.label(L"waifu2x-ncnn-vulkan.exe 可执行文件路径：", 16, 14, 380, 20);
+            st->exeEdit = ui.edit(IdExeEdit, 16, 36, 424, 26, pk::wideToUtf8(cur.executable.wstring()));
+            ui.button(L"浏览…", IdBrowseExeBtn, 446, 36, 78, 26);
+
+            ui.label(L"模型文件夹路径（可选，留空自动查找同级 models-cunet）：", 16, 72, 460, 20);
+            st->modEdit = ui.edit(IdModEdit, 16, 94, 424, 26, pk::wideToUtf8(cur.modelsDir.wstring()));
+            ui.button(L"选择…", IdBrowseModBtn, 446, 94, 78, 26);
+
+            st->inCheck  = ui.checkbox(L"启用输入素材预超分", IdInCheck, 16, 132, 168, 24, cur.upscaleInput);
+            st->outCheck = ui.checkbox(L"启用生成成品超分", IdOutCheck, 192, 132, 164, 24, cur.upscaleOutput);
+            st->ttaCheck = ui.checkbox(L"TTA 增强模式 (-x)", IdTtaCheck, 364, 132, 160, 24, cur.tta);
+
+            static constexpr int kScales[] = {1, 2, 4, 8, 16, 32};
+            int scaleIdx = 1;
+            for (int i = 0; i < 6; ++i) if (kScales[i] == cur.scale) scaleIdx = i;
+
+            ui.label(L"超分倍率：", 16, 168, 120, 20);
+            st->scaleCombo = ui.combo(IdScaleCombo, 16, 190, 150, 180, {L"1x (仅降噪)", L"2x", L"4x", L"8x", L"16x", L"32x"}, scaleIdx);
+
+            ui.label(L"降噪等级 (-1..3)：", 184, 168, 150, 20);
+            st->noiseCombo = ui.combo(IdNoiseCombo, 184, 190, 160, 180, {L"-1 (不降噪)", L"0", L"1", L"2", L"3"}, std::clamp(cur.noise + 1, 0, 4));
+
+            ui.label(L"分块 Tile (0=自动)：", 362, 168, 162, 20);
+            st->tileEdit = ui.edit(IdTileEdit, 362, 190, 162, 26, std::to_string(cur.tile), ES_NUMBER);
+
+            ui.label(L"GPU 设备号 (-2=自动, -1=CPU)：", 16, 228, 230, 20);
+            st->gpuEdit = ui.edit(IdGpuEdit, 16, 250, 220, 26, std::to_string(cur.gpu));
+
+            ui.label(L"单批超时秒数 (5..3600)：", 256, 228, 240, 20);
+            st->timeoutEdit = ui.edit(IdTimeoutEdit, 256, 250, 268, 26, std::to_string(cur.timeoutSeconds), ES_NUMBER);
+
+            ui.button(L"保存设置", IdSaveBtn, 328, 294, 96, 32, true);
+            ui.button(L"取消", IdCancelBtn, 432, 294, 92, 32, false);
+
+            ui.applyFont(st->font);
+            return 0;
+        }
+        if (msg == WM_COMMAND) {
+            int id = LOWORD(wp);
+            if (id == IdBrowseExeBtn) {
+                if (auto p = pk::pickSinglePath(w, false, false, L"选择 waifu2x-ncnn-vulkan.exe")) {
+                    pk::setWindowTextUtf8(st->exeEdit, pk::wideToUtf8(p->wstring()));
+                }
+                return 0;
+            }
+            if (id == IdBrowseModBtn) {
+                if (auto p = pk::pickSinglePath(w, false, true, L"选择 Waifu2x 模型文件夹")) {
+                    pk::setWindowTextUtf8(st->modEdit, pk::wideToUtf8(p->wstring()));
+                }
+                return 0;
+            }
+            if (id == IdSaveBtn) {
+                try {
+                    static constexpr int kScales[] = {1, 2, 4, 8, 16, 32};
+                    UpscaleSettings next;
+                    next.executable = pk::utf8ToWideStrict(pk::trimAscii(pk::getWindowTextUtf8(st->exeEdit)));
+                    next.modelsDir  = pk::utf8ToWideStrict(pk::trimAscii(pk::getWindowTextUtf8(st->modEdit)));
+                    next.upscaleInput  = pk::isButtonChecked(st->inCheck);
+                    next.upscaleOutput = pk::isButtonChecked(st->outCheck);
+                    next.tta           = pk::isButtonChecked(st->ttaCheck);
+                    LRESULT scSel = SendMessageW(st->scaleCombo, CB_GETCURSEL, 0, 0);
+                    next.scale = (scSel >= 0 && scSel < 6) ? kScales[scSel] : 2;
+                    LRESULT nsSel = SendMessageW(st->noiseCombo, CB_GETCURSEL, 0, 0);
+                    next.noise = (nsSel >= 0 && nsSel <= 4) ? int(nsSel) - 1 : 0;
+                    next.tile = pk::parseIntField(st->tileEdit, "分块大小", 0, 4096);
+                    next.gpu  = pk::parseIntField(st->gpuEdit, "GPU 设备号", -2, 15);
+                    next.timeoutSeconds = pk::parseIntField(st->timeoutEdit, "超时秒数", 5, 3600);
+
+                    // Validate & save BEFORE closing window!
+                    st->plugin->saveToDisk(next);
+                    DestroyWindow(w);
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"Waifu2x 超分设置");
+                }
+                return 0;
+            }
+            if (id == IdCancelBtn || id == IDCANCEL) {
+                DestroyWindow(w);
+                return 0;
+            }
+        }
+        if (msg == WM_CLOSE) {
+            DestroyWindow(w);
+            return 0;
+        }
+        return DefWindowProcW(w, msg, wp, lp);
+    }
+
+    static void MEMESTUDIO_CALL onDestroy(void* ctx) {
+        delete static_cast<Waifu2xPanelState*>(ctx);
+    }
+};
+
 int32_t MEMESTUDIO_CALL abiCreate(const MemeStudioHostV2* host, void** outInst, MemeStudioBytesV2* outErr) {
     if (!host || !outInst || host->abi_version != MEMESTUDIO_PLUGIN_ABI_V2) return -1;
     try {
@@ -428,6 +565,19 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
     try {
         std::string cmd(commandId);
         Json args = (argsJson && argsJson[0]) ? Json::parse(argsJson) : Json::object();
+
+        if (cmd == "configure" && args.empty()) {
+            auto* panel = new Waifu2xPanelState{self};
+            if (self->host.raw()->open_panel(
+                    self->host.raw()->host_ctx, "waifu2x-config", ownerHwnd,
+                    540, 342, "Waifu2x 超分放大设置",
+                    Waifu2xPanelState::wndProc, panel, Waifu2xPanelState::onDestroy) != 0) {
+                delete panel;
+                throw pk::PluginError("无法打开 Waifu2x 配置面板");
+            }
+            self->host.writeOutBytes(outResult, R"({"opened":true})");
+            return 0;
+        }
 
         if (cmd == "configure" && !args.empty()) {
             UpscaleSettings current;
