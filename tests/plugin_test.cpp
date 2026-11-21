@@ -1,67 +1,152 @@
 #include "memestudio_plugin_test_harness.hpp"
+#include <wincodec.h>
 #include <iostream>
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: PluginTests <plugin_stage_dir>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: PluginTests <plugin_stage_dir> <mock_waifu_exe>\n";
         return 1;
     }
+    HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     try {
+        using Json = nlohmann::json;
+        namespace pk = meme::plugin_kit;
+
         meme::test_harness::MockPluginHostEnv env;
+        // Override encode_media & decode_media with real WIC dimensions so 2x upscale dimensions verify strictly!
+        env.table.encode_media = [](
+            void*, const char* pathOrNull, const char*, const MemeStudioImageBufferV2* frames, size_t count,
+            MemeStudioBytesV2*, MemeStudioBytesV2*) -> int32_t {
+            if (!pathOrNull || !frames || !count) return -1;
+            Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+            CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+            Microsoft::WRL::ComPtr<IWICBitmap> bmp;
+            factory->CreateBitmapFromMemory(
+                frames[0].width, frames[0].height, GUID_WICPixelFormat32bppBGRA,
+                frames[0].stride, frames[0].stride * frames[0].height, frames[0].bgra_pixels, &bmp);
+            Microsoft::WRL::ComPtr<IWICStream> stream;
+            factory->CreateStream(&stream);
+            stream->InitializeFromFilename(pk::utf8ToWideStrict(pathOrNull).c_str(), GENERIC_WRITE);
+            Microsoft::WRL::ComPtr<IWICBitmapEncoder> enc;
+            factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+            enc->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+            Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> f;
+            enc->CreateNewFrame(&f, nullptr);
+            f->Initialize(nullptr);
+            f->SetSize(frames[0].width, frames[0].height);
+            WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+            f->SetPixelFormat(&fmt);
+            f->WriteSource(bmp.Get(), nullptr);
+            f->Commit();
+            enc->Commit();
+            return 0;
+        };
+        env.table.decode_media = [](
+            void*, const char* pathUtf8, const uint8_t*, size_t,
+            MemeStudioBytesV2*, MemeStudioImageBufferV2** outFrames, size_t* outCount, MemeStudioBytesV2*) -> int32_t {
+            Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+            CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+            Microsoft::WRL::ComPtr<IWICBitmapDecoder> dec;
+            if (FAILED(factory->CreateDecoderFromFilename(pk::utf8ToWideStrict(pathUtf8).c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) return -1;
+            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> f0;
+            dec->GetFrame(0, &f0);
+            UINT w = 0, h = 0;
+            f0->GetSize(&w, &h);
+            Microsoft::WRL::ComPtr<IWICFormatConverter> conv;
+            factory->CreateFormatConverter(&conv);
+            conv->Initialize(f0.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+            auto* arr = static_cast<MemeStudioImageBufferV2*>(std::calloc(1, sizeof(MemeStudioImageBufferV2)));
+            auto* px = static_cast<uint8_t*>(std::malloc(size_t(w) * h * 4));
+            conv->CopyPixels(nullptr, w * 4, w * h * 4, px);
+            arr[0] = MemeStudioImageBufferV2{w, h, w * 4, 100, px};
+            *outFrames = arr;
+            *outCount = 1;
+            return 0;
+        };
+
         meme::test_harness::LoadedPluginUnderTest plugin(argv[1], env);
-        meme::plugin_kit::HostClient helper(&env.table, plugin.desc->id);
+        pk::HostClient helper(&env.table, plugin.desc->id);
 
-        // 1. Default prompt transformation appends consistency suffix
-        MemeStudioBytesV2 outPrompt{};
+        pk::fs::path mockExe = argv[2];
+        pk::fs::path modelsDir = env.sandboxDir / L"models-cunet";
+        pk::fs::create_directories(modelsDir);
+        static constexpr uint8_t kDummy[] = {'o', 'k'};
+        pk::writeFileAtomic(modelsDir / L"scale2.0x_model.param", kDummy);
+        pk::writeFileAtomic(modelsDir / L"scale2.0x_model.bin", kDummy);
+
+        // 1. Regression check: Non-existent exe path MUST be rejected even when input/output toggles are false!
+        MemeStudioBytesV2 outRes{};
         MemeStudioBytesV2 outErr{};
-        int32_t rc = plugin.desc->transform_prompt(plugin.instance, "{}", "Base prompt.", &outPrompt, &outErr);
-        std::string transformed = helper.consumeBytesToString(outPrompt);
+        Json badCfg{{"executable", "D:/nonexistent/waifu2x.exe"}, {"input", false}, {"output", false}};
+        if (plugin.desc->invoke_command(plugin.instance, "configure", badCfg.dump().c_str(), nullptr, nullptr, &outRes, &outErr) == 0) {
+            std::cerr << "Expected non-existent executable path to fail validation even when disabled\n";
+            return 1;
+        }
+        helper.consumeBytesToString(outRes);
         helper.consumeBytesToString(outErr);
-        if (rc != 0 || transformed.find("Base prompt.") == std::string::npos ||
-            transformed.find("Maintain consistent character identity") == std::string::npos) {
-            std::cerr << "Unexpected default transform output: " << transformed << "\n";
+
+        // 2. Configure valid 2x output upscale and run batch of 3 frames — verify SINGLE subprocess invocation!
+        Json validCfg{
+            {"executable", pk::wideToUtf8(mockExe.wstring())},
+            {"models", pk::wideToUtf8(modelsDir.wstring())},
+            {"input", false},
+            {"output", true},
+            {"scale", 2},
+            {"noise", 0}
+        };
+        if (plugin.desc->invoke_command(plugin.instance, "configure", validCfg.dump().c_str(), nullptr, nullptr, &outRes, &outErr) != 0) {
+            std::cerr << "Configure failed: " << helper.consumeBytesToString(outErr) << "\n";
             return 1;
         }
+        helper.consumeBytesToString(outRes);
 
-        // 2. Configure custom suffix & persist into isolated AppData plugin dir
-        MemeStudioBytesV2 cmdRes{};
-        rc = plugin.desc->invoke_command(
-            plugin.instance,
-            "configure",
-            R"({"enabled":true,"suffix":"Custom Studio Tag"})",
-            nullptr,
-            nullptr,
-            &cmdRes,
-            &outErr);
-        auto resJson = nlohmann::json::parse(helper.consumeBytesToString(cmdRes));
-        if (rc != 0 || resJson.at("suffix") != "Custom Studio Tag") {
-            std::cerr << "Configure command failed\n";
-            return 1;
+        std::vector<MemeStudioImageBufferV2> batch(3);
+        for (auto& f : batch) {
+            f.width = 16; f.height = 12; f.stride = 64; f.delay_ms = 80;
+            f.bgra_pixels = static_cast<uint8_t*>(std::calloc(16 * 12 * 4, 1));
         }
 
-        // 3. Re-instantiate a SECOND independent plugin instance to verify zero global state collision
-        //    and verify persistence round-trip from disk!
-        meme::test_harness::LoadedPluginUnderTest secondInstance(argv[1], env);
-        rc = secondInstance.desc->transform_prompt(secondInstance.instance, "{}", "Hello.", &outPrompt, &outErr);
-        std::string secondOut = helper.consumeBytesToString(outPrompt);
-        if (rc != 0 || secondOut != "Hello.\nCustom Studio Tag") {
-            std::cerr << "Second instance persistence check failed: " << secondOut << "\n";
+        if (plugin.desc->process_frames_batch(plugin.instance, "output", "{}", batch.data(), batch.size(), nullptr, &outErr) != 0) {
+            std::cerr << "Batch upscale failed: " << helper.consumeBytesToString(outErr) << "\n";
             return 1;
         }
-
-        // 4. Verify staged dist directory contains ONLY clean artifacts (.dll, plugin.json, README.md) — zero .obj/.lib/.exp!
-        for (const auto& entry : std::filesystem::directory_iterator(argv[1])) {
-            auto ext = entry.path().extension().wstring();
-            if (ext == L".obj" || ext == L".lib" || ext == L".exp" || ext == L".ilk") {
-                std::cerr << "Dirty build artifact leaked into plugin dist folder: " << entry.path().string() << "\n";
+        for (auto& f : batch) {
+            if (f.width != 32 || f.height != 24) {
+                std::cerr << "Unexpected upscaled dimensions: " << f.width << "x" << f.height << "\n";
                 return 1;
             }
+            std::free(f.bgra_pixels);
         }
 
-        std::cout << "memestudio.example ABI v2 tests passed.\n";
+        // Verify mock-waifu was spawned ONLY ONCE for all 3 frames!
+        pk::fs::path countFile = helper.dataDir() / L"temp" / L"invocations.count";
+        auto countBytes = pk::readFileBytes(countFile);
+        if (std::stoi(std::string(countBytes.begin(), countBytes.end())) != 1) {
+            std::cerr << "Expected single batch invocation for 3 frames!\n";
+            return 1;
+        }
+
+        // 3. BUG-20 Regression check: Non-zero exit MUST include captured stderr text in error message!
+        Json failCfg = validCfg;
+        failCfg["noise"] = 3; // Triggers simulated OOM stderr in mock-waifu
+        plugin.desc->invoke_command(plugin.instance, "configure", failCfg.dump().c_str(), nullptr, nullptr, &outRes, &outErr);
+        helper.consumeBytesToString(outRes);
+
+        MemeStudioImageBufferV2 oneFrame{16, 16, 64, 100, static_cast<uint8_t*>(std::calloc(16 * 16 * 4, 1))};
+        int32_t failRc = plugin.desc->process_frames_batch(plugin.instance, "output", "{}", &oneFrame, 1, nullptr, &outErr);
+        std::free(oneFrame.bgra_pixels);
+        std::string errMsg = helper.consumeBytesToString(outErr);
+        if (failRc == 0 || errMsg.find("simulated mock-waifu failure") == std::string::npos) {
+            std::cerr << "Expected stderr tail in error message, got: " << errMsg << "\n";
+            return 1;
+        }
+
+        std::cout << "memestudio.waifu2x batch upscale & stderr capture tests passed.\n";
+        if (SUCCEEDED(comHr)) CoUninitialize();
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[FAIL] " << e.what() << "\n";
+        if (SUCCEEDED(comHr)) CoUninitialize();
         return 1;
     }
 }

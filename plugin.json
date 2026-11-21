@@ -1,19 +1,19 @@
 {
   "api_version": 2,
-  "id": "memestudio.example",
-  "name": "示例一致性增强插件",
+  "id": "memestudio.waifu2x",
+  "name": "Waifu2x 超分放大",
   "version": "2.0.0",
-  "description": "MemeConvertStudio 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
-  "library": "example.dll",
+  "description": "独立的外部 waifu2x-ncnn-vulkan 整批超分滤镜插件，支持输入预超分与成品超分单进程批处理。",
+  "library": "waifu2x.dll",
   "commands": [
     {
       "id": "configure",
-      "title": "示例插件配置…",
-      "toolbar": false
+      "title": "Waifu2x 超分设置…",
+      "toolbar": true
     },
     {
       "id": "status",
-      "title": "查看示例状态",
+      "title": "查看超分配置状态",
       "toolbar": false
     }
   ]
