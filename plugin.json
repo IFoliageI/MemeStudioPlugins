@@ -1,0 +1,20 @@
+{
+  "api_version": 2,
+  "id": "memestudio.example",
+  "name": "示例一致性增强插件",
+  "version": "2.0.0",
+  "description": "MemeConvertStudio 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
+  "library": "example.dll",
+  "commands": [
+    {
+      "id": "configure",
+      "title": "示例插件配置…",
+      "toolbar": false
+    },
+    {
+      "id": "status",
+      "title": "查看示例状态",
+      "toolbar": false
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+name: Build Plugin
+
+on:
+  push:
+    branches:
+      - main
+      - 'plugin-*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Plugin Slug
+        id: meta
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw -LiteralPath "plugin.json" | ConvertFrom-Json
+          $slug = [IO.Path]::GetFileNameWithoutExtension($manifest.library)
+          "slug=$slug" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Configure and Build (${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          cmake --preset "windows-${{ matrix.arch }}"
+          cmake --build --preset "${{ matrix.arch }}-release"
+
+      - name: Run Plugin Tests (x64)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: ctest --preset x64-release --output-on-failure
+
+      - name: Upload Clean Plugin Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: MemeConvertStudio-${{ steps.meta.outputs.slug }}-Windows-${{ matrix.arch }}
+          path: out/build/${{ matrix.arch }}/dist/Release/plugins/
+          if-no-files-found: error

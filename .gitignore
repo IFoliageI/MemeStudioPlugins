@@ -1,0 +1,36 @@
+# CMake & Package Outputs
+/out/
+/build/
+/bin/
+/dist/
+/tmp/
+/*.zip
+/*.7z
+/*.sha256
+
+# MSVC & IDE Artifacts
+/.vs/
+/.vscode/
+/CMakeUserPresets.json
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.part
+*.memestudio/
+
+# Python / Node / Downloaded Runtimes
+**/__pycache__/
+*.py[cod]
+**/.venv/
+**/venv/
+**/.env
+**/.env.*
+**/node_modules/
+**/runtime/
+
+# Accidental Drops & Logs
+/Cache_*
+**/MemeStudio-error.txt
+*.log
