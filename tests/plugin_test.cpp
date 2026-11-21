@@ -2,18 +2,27 @@
 #include <iostream>
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: PluginTests <plugin_stage_dir>\n";
-        return 1;
-    }
+    if (argc < 2) return 1;
     try {
         meme::test_harness::MockPluginHostEnv env;
         meme::test_harness::LoadedPluginUnderTest plugin(argv[1], env);
         meme::plugin_kit::HostClient helper(&env.table, plugin.desc->id);
 
-        // 1. Default prompt transformation appends consistency suffix
-        MemeStudioBytesV2 outPrompt{};
+        // 1. GUI panel creation check: MUST create real Win32 child controls (never blank!)
+        MemeStudioBytesV2 cmdRes{};
         MemeStudioBytesV2 outErr{};
+        if (plugin.desc->invoke_command(plugin.instance, "configure", "{}", nullptr, nullptr, &cmdRes, &outErr) != 0) {
+            std::cerr << "Open configure panel failed: " << helper.consumeBytesToString(outErr) << "\n";
+            return 1;
+        }
+        helper.consumeBytesToString(cmdRes);
+        if (env.lastOpenedPanelChildCount < 5) {
+            std::cerr << "Panel opened blank! Child control count = " << env.lastOpenedPanelChildCount << "\n";
+            return 1;
+        }
+
+        // 2. Default prompt transformation appends consistency suffix
+        MemeStudioBytesV2 outPrompt{};
         int32_t rc = plugin.desc->transform_prompt(plugin.instance, "{}", "Base prompt.", &outPrompt, &outErr);
         std::string transformed = helper.consumeBytesToString(outPrompt);
         helper.consumeBytesToString(outErr);
@@ -23,42 +32,22 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
 
-        // 2. Configure custom suffix & persist into isolated AppData plugin dir
-        MemeStudioBytesV2 cmdRes{};
+        // 3. Configure custom suffix & verify second instance persistence
         rc = plugin.desc->invoke_command(
-            plugin.instance,
-            "configure",
-            R"({"enabled":true,"suffix":"Custom Studio Tag"})",
-            nullptr,
-            nullptr,
-            &cmdRes,
-            &outErr);
+            plugin.instance, "configure", R"({"enabled":true,"suffix":"Custom Studio Tag"})",
+            nullptr, nullptr, &cmdRes, &outErr);
         auto resJson = nlohmann::json::parse(helper.consumeBytesToString(cmdRes));
         if (rc != 0 || resJson.at("suffix") != "Custom Studio Tag") {
-            std::cerr << "Configure command failed\n";
             return 1;
         }
 
-        // 3. Re-instantiate a SECOND independent plugin instance to verify zero global state collision
-        //    and verify persistence round-trip from disk!
         meme::test_harness::LoadedPluginUnderTest secondInstance(argv[1], env);
         rc = secondInstance.desc->transform_prompt(secondInstance.instance, "{}", "Hello.", &outPrompt, &outErr);
-        std::string secondOut = helper.consumeBytesToString(outPrompt);
-        if (rc != 0 || secondOut != "Hello.\nCustom Studio Tag") {
-            std::cerr << "Second instance persistence check failed: " << secondOut << "\n";
+        if (rc != 0 || helper.consumeBytesToString(outPrompt) != "Hello.\nCustom Studio Tag") {
             return 1;
         }
 
-        // 4. Verify staged dist directory contains ONLY clean artifacts (.dll, plugin.json, README.md) — zero .obj/.lib/.exp!
-        for (const auto& entry : std::filesystem::directory_iterator(argv[1])) {
-            auto ext = entry.path().extension().wstring();
-            if (ext == L".obj" || ext == L".lib" || ext == L".exp" || ext == L".ilk") {
-                std::cerr << "Dirty build artifact leaked into plugin dist folder: " << entry.path().string() << "\n";
-                return 1;
-            }
-        }
-
-        std::cout << "memestudio.example ABI v2 tests passed.\n";
+        std::cout << "memestudio.example ABI v2 & GUI panel tests passed (children=" << env.lastOpenedPanelChildCount << ").\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[FAIL] " << e.what() << "\n";

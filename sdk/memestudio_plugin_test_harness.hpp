@@ -18,6 +18,28 @@ struct MockHttpExchange {
     std::vector<std::pair<std::string, std::string>> sseEvents;
 };
 
+struct TestPanelCreateBinding {
+    intptr_t(MEMESTUDIO_CALL* proc)(void*, void*, uint32_t, uintptr_t, intptr_t) = nullptr;
+    void* ctx = nullptr;
+    void(MEMESTUDIO_CALL* onDestroy)(void*) = nullptr;
+};
+
+inline LRESULT CALLBACK testPanelHostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    auto* b = reinterpret_cast<TestPanelCreateBinding*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (!b) return DefWindowProcW(hwnd, msg, wp, lp);
+    intptr_t r = b->proc ? b->proc(b->ctx, hwnd, msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
+    if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        if (b->onDestroy) b->onDestroy(b->ctx);
+    }
+    return r;
+}
+
 class MockPluginHostEnv {
 public:
     fs::path sandboxDir;
@@ -25,6 +47,8 @@ public:
     Json workspaceState = Json::object();
     Json lastEndpointOverride = nullptr;
     std::string lastPresentedFile;
+    int lastOpenedPanelChildCount = 0;
+    std::string lastOpenedPanelTitle;
     std::vector<std::string> logs;
     std::vector<Json> submittedReplaceJobs;
     std::function<MockHttpExchange(const Json& reqSpec, std::string_view body)> httpHandler;
@@ -32,9 +56,13 @@ public:
     MemeStudioHostV2 table{};
 
     MockPluginHostEnv() {
-        sandboxDir = fs::temp_directory_path() /
-                     (L"mcs-plugin-test-" + plugin_kit::utf8ToWideStrict(plugin_kit::randomHex(8)));
-        fs::create_directories(sandboxDir);
+        auto suffix = L"mcs-plugin-test-" + plugin_kit::utf8ToWideStrict(plugin_kit::randomHex(8));
+        std::error_code ec;
+        sandboxDir = fs::temp_directory_path(ec) / suffix;
+        if (ec || !fs::create_directories(sandboxDir, ec)) {
+            sandboxDir = fs::current_path() / suffix;
+            fs::create_directories(sandboxDir);
+        }
 
         table.struct_size = sizeof(MemeStudioHostV2);
         table.abi_version = MEMESTUDIO_PLUGIN_ABI_V2;
@@ -158,7 +186,6 @@ public:
                 writeBytes(outErr, "无图像帧");
                 return -1;
             }
-            // Minimal valid 1x1 PNG header/chunks signature for mock verification
             static constexpr uint8_t kTinyPng[] = {
                 0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A,
                 0x00,0x00,0x00,0x0D,'I','H','D','R',0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,0x08,0x06,0x00,0x00,0x00,0x1F,0x15,0xC4,0x89,
@@ -221,10 +248,43 @@ public:
             writeBytes(outRes, Json{{"outputs", Json::array({outPath})}}.dump());
             return 0;
         };
-        table.open_panel = [](void*, const char*, void*, int32_t, int32_t, const char*,
-                              intptr_t(MEMESTUDIO_CALL*)(void*, void*, uint32_t, uintptr_t, intptr_t),
-                              void* panelCtx, void(MEMESTUDIO_CALL* onDestroy)(void*)) -> int32_t {
-            if (onDestroy && panelCtx) onDestroy(panelCtx);
+        // Creates a REAL Win32 hidden panel window, triggers WM_CREATE inside the plugin,
+        // counts all child HWNDs via EnumChildWindows, and destroys cleanly!
+        table.open_panel = [](
+            void* ctx, const char*, void*, int32_t wDip, int32_t hDip, const char* titleUtf8,
+            intptr_t(MEMESTUDIO_CALL* wndProc)(void*, void*, uint32_t, uintptr_t, intptr_t),
+            void* panelCtx, void(MEMESTUDIO_CALL* onDestroy)(void*)) -> int32_t {
+            auto* self = static_cast<MockPluginHostEnv*>(ctx);
+            HINSTANCE inst = GetModuleHandleW(nullptr);
+            static constexpr const wchar_t* kTestPanelCls = L"MemeTestPanelHostV2";
+            WNDCLASSEXW ex{sizeof(WNDCLASSEXW)};
+            if (!GetClassInfoExW(inst, kTestPanelCls, &ex)) {
+                WNDCLASSEXW wc{};
+                wc.cbSize = sizeof(WNDCLASSEXW);
+                wc.lpfnWndProc = testPanelHostWndProc;
+                wc.hInstance = inst;
+                wc.lpszClassName = kTestPanelCls;
+                RegisterClassExW(&wc);
+            }
+            TestPanelCreateBinding binding{wndProc, panelCtx, onDestroy};
+            HWND win = CreateWindowExW(
+                0, kTestPanelCls, L"TestPanel",
+                WS_POPUP | WS_CAPTION,
+                0, 0, std::max(300, int(wDip)), std::max(200, int(hDip)),
+                nullptr, nullptr, inst, &binding);
+            if (!win) {
+                if (onDestroy && panelCtx) onDestroy(panelCtx);
+                return -1;
+            }
+            int childCount = 0;
+            EnumChildWindows(win, [](HWND, LPARAM lp) -> BOOL {
+                ++(*reinterpret_cast<int*>(lp));
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&childCount));
+
+            self->lastOpenedPanelChildCount = childCount;
+            self->lastOpenedPanelTitle = titleUtf8 ? titleUtf8 : "";
+            DestroyWindow(win);
             return 0;
         };
     }
