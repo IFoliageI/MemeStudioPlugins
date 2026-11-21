@@ -1,19 +1,34 @@
 {
   "api_version": 2,
-  "id": "memestudio.example",
-  "name": "示例一致性增强插件",
+  "id": "memestudio.antigravity-harness",
+  "name": "本地命名管道自动化桥接",
   "version": "2.0.0",
-  "description": "MemeConvertStudio 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
-  "library": "example.dll",
+  "description": "独立的同账户 SDDL 权限保护本地命名管道 RPC 服务插件，支持能力白名单、自愈日配额与外部 Agent 工具调用。",
+  "library": "antigravity-harness.dll",
   "commands": [
     {
+      "id": "open-panel",
+      "title": "自动化权限…",
+      "toolbar": true
+    },
+    {
       "id": "configure",
-      "title": "示例插件配置…",
+      "title": "配置自动化权限与配额",
       "toolbar": false
     },
     {
       "id": "status",
-      "title": "查看示例状态",
+      "title": "查询桥接服务与配额状态",
+      "toolbar": false
+    },
+    {
+      "id": "stop-server",
+      "title": "停止命名管道监听",
+      "toolbar": false
+    },
+    {
+      "id": "rpc",
+      "title": "进程内执行自动化 RPC",
       "toolbar": false
     }
   ]
