@@ -1,19 +1,34 @@
 {
   "api_version": 2,
-  "id": "memestudio.example",
-  "name": "示例一致性增强插件",
+  "id": "memestudio.api-load-balancing",
+  "name": "多渠道均衡与故障转移",
   "version": "2.0.0",
-  "description": "MemeConvertStudio 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
-  "library": "example.dll",
+  "description": "独立的 API 渠道池负载均衡、自动故障转移与多渠道出图对比插件，通过传输拦截器透明接管请求。",
+  "library": "api-load-balancing.dll",
   "commands": [
     {
+      "id": "open-panel",
+      "title": "渠道池均衡…",
+      "toolbar": true
+    },
+    {
       "id": "configure",
-      "title": "示例插件配置…",
+      "title": "配置渠道池规则",
       "toolbar": false
     },
     {
-      "id": "status",
-      "title": "查看示例状态",
+      "id": "statistics",
+      "title": "查询渠道运行统计",
+      "toolbar": false
+    },
+    {
+      "id": "reset-health",
+      "title": "重置冷却与统计状态",
+      "toolbar": false
+    },
+    {
+      "id": "compare",
+      "title": "多渠道独立出图对比",
       "toolbar": false
     }
   ]
