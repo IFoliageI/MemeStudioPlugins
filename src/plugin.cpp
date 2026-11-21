@@ -419,7 +419,7 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
     void* rawInst,
     const char* commandId,
     const char* argsJson,
-    void*,
+    void* ownerHwnd,
     MemeStudioCancelTokenV2*,
     MemeStudioBytesV2* outResult,
     MemeStudioBytesV2* outErr) {
