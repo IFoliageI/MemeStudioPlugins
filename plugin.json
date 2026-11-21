@@ -1,19 +1,24 @@
 {
   "api_version": 2,
-  "id": "memestudio.example",
-  "name": "示例一致性增强插件",
+  "id": "memestudio.batch-convert",
+  "name": "多源批量转换",
   "version": "2.0.0",
-  "description": "MemeConvertStudio 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
-  "library": "example.dll",
+  "description": "独立的多文件与目录批量表情转换队列插件，支持文件头极速扫描、防覆盖规划与单条容错续跑。",
+  "library": "batch-convert.dll",
   "commands": [
     {
-      "id": "configure",
-      "title": "示例插件配置…",
+      "id": "open-panel",
+      "title": "批量队列…",
+      "toolbar": true
+    },
+    {
+      "id": "inspect-sources",
+      "title": "扫描校验素材队列",
       "toolbar": false
     },
     {
-      "id": "status",
-      "title": "查看示例状态",
+      "id": "run-batch",
+      "title": "执行批量转换队列",
       "toolbar": false
     }
   ]
