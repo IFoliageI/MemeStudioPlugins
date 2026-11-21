@@ -64,7 +64,7 @@ if(MEMEPLUGIN_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin_t
         "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
     target_include_directories(PluginTests SYSTEM PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
-    target_link_libraries(PluginTests PRIVATE plugin_compiler_flags ole32 uuid crypt32 bcrypt advapi32)
+    target_link_libraries(PluginTests PRIVATE plugin_compiler_flags user32 gdi32 msimg32 comctl32 comdlg32 shell32 ole32 uuid crypt32 bcrypt advapi32)
     if(MSVC)
         set_property(TARGET PluginTests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         target_link_options(PluginTests PRIVATE /ENTRY:wmainCRTStartup)
