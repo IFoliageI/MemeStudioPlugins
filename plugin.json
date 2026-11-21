@@ -1,19 +1,24 @@
 {
   "api_version": 2,
-  "id": "memestudio.example",
-  "name": "示例一致性增强插件",
+  "id": "memestudio.api-parameter-test",
+  "name": "API 参数兼容性探测",
   "version": "2.0.0",
-  "description": "MemeConvertStudio 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
-  "library": "example.dll",
+  "description": "独立的图像接口参数兼容性探测插件，支持自适应上传字段发现、流式与输出格式核验及脱敏报告导出。",
+  "library": "api-parameter-test.dll",
   "commands": [
     {
-      "id": "configure",
-      "title": "示例插件配置…",
+      "id": "open-panel",
+      "title": "接口探测…",
+      "toolbar": true
+    },
+    {
+      "id": "plan",
+      "title": "生成探测用例计划",
       "toolbar": false
     },
     {
-      "id": "status",
-      "title": "查看示例状态",
+      "id": "probe",
+      "title": "执行接口参数探测",
       "toolbar": false
     }
   ]
