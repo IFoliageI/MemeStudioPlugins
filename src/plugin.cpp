@@ -1,7 +1,9 @@
 #include "memestudio_plugin_kit.hpp"
 #include "../vendor/nlohmann/json.hpp"
 #include <commctrl.h>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -371,11 +373,240 @@ struct ApiProbePlugin {
     }
 };
 
+enum ProbePanelId : int {
+    IdModeCombo     = 3501,
+    IdMatrixLv      = 3502,
+    IdCustomJsonBox = 3503,
+    IdAddCustomBtn  = 3504,
+    IdExportJsonBtn = 3505,
+    IdStartProbeBtn = 3506,
+    IdCloseProbeBtn = 3507
+};
+
+constexpr UINT WM_PROBE_DONE = WM_APP + 43;
+
 struct ProbePanelContext {
     ApiProbePlugin* plugin = nullptr;
-    static intptr_t MEMESTUDIO_CALL wndProc(void*, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
-        return DefWindowProcW(static_cast<HWND>(rawHwnd), msg, wp, lp);
+    HWND hwnd = nullptr;
+    HFONT font = nullptr;
+    HWND modeCombo = nullptr, matrixLv = nullptr, customBox = nullptr;
+    HWND statusLabel = nullptr, exportBtn = nullptr, startBtn = nullptr;
+
+    std::vector<Json> customCases;
+    std::thread worker;
+    bool busy = false;
+    std::mutex mtx;
+    Json lastReport = Json::object();
+    std::string lastErr;
+
+    ~ProbePanelContext() {
+        if (worker.joinable()) worker.join();
+        if (font) DeleteObject(font);
     }
+
+    Json pullWorkspaceProvider() {
+        MemeStudioBytesV2 wsBytes{};
+        if (plugin->host.raw()->get_workspace_state(plugin->host.raw()->host_ctx, &wsBytes) == 0) {
+            try {
+                auto ws = Json::parse(plugin->host.consumeBytesToString(wsBytes));
+                if (ws.contains("provider") && ws["provider"].is_object()) return ws["provider"];
+            } catch (...) {}
+        }
+        return Json::object();
+    }
+
+    void populatePlannedMatrix() {
+        ListView_DeleteAllItems(matrixLv);
+        bool genMode = (SendMessageW(modeCombo, CB_GETCURSEL, 0, 0) == 1);
+        auto planned = defaultProbeMatrix(pullWorkspaceProvider(), genMode);
+        for (size_t i = 0; i < customCases.size(); ++i) {
+            planned.push_back(ProbeCase{
+                "custom_" + std::to_string(i + 1),
+                customCases[i].value("label", std::string("自定义探测项")),
+                customCases[i].value("overrides", customCases[i])
+            });
+        }
+
+        for (size_t i = 0; i < planned.size(); ++i) {
+            std::wstring wlabel = pk::utf8ToWideLossy(planned[i].label);
+            LVITEMW item{};
+            item.mask = LVIF_TEXT;
+            item.iItem = static_cast<int>(i);
+            item.pszText = wlabel.data();
+            ListView_InsertItem(matrixLv, &item);
+
+            std::wstring wover = pk::utf8ToWideLossy(planned[i].overrides.dump());
+            ListView_SetItemText(matrixLv, static_cast<int>(i), 1, wover.data());
+            ListView_SetItemText(matrixLv, static_cast<int>(i), 2, const_cast<LPWSTR>(L"—"));
+            ListView_SetItemText(matrixLv, static_cast<int>(i), 3, const_cast<LPWSTR>(L"待探测"));
+            ListView_SetItemText(matrixLv, static_cast<int>(i), 4, const_cast<LPWSTR>(L""));
+        }
+        pk::setWindowTextUtf8(
+            statusLabel,
+            "计划发送 " + std::to_string(planned.size()) + " 次真实图像探测请求（产生正常接口调用消耗）");
+    }
+
+    static intptr_t MEMESTUDIO_CALL wndProc(void* ctx, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
+        auto* st = static_cast<ProbePanelContext*>(ctx);
+        HWND w = static_cast<HWND>(rawHwnd);
+        if (msg == WM_CREATE) {
+            st->hwnd = w;
+            pk::PanelBuilder ui(w);
+            st->font = pk::createDpiUiFont(ui.dpi().dpi, 14);
+
+            ui.label(L"探测接口模式：", 16, 16, 110, 22);
+            st->modeCombo = ui.combo(IdModeCombo, 126, 12, 340, 160, {
+                L"多图编辑接口 (/v1/images/edits · Multipart)",
+                L"纯文生图接口 (/v1/images/generations · JSON)"
+            }, 0);
+
+            st->matrixLv = ui.reportListView(IdMatrixLv, 16, 48, 788, 320, {
+                {L"探测用例", 200},
+                {L"覆盖参数", 190},
+                {L"HTTP", 65},
+                {L"兼容结论", 95},
+                {L"诊断说明", 215}
+            });
+
+            ui.label(L"追加自定义探测参数（JSON 对象，按 Enter 换行不会误触发送）：", 16, 380, 520, 20);
+            st->customBox = ui.multilineEdit(IdCustomJsonBox, 16, 404, 650, 88, "{\r\n  \"quality\": \"medium\"\r\n}", false);
+            ui.button(L"添加探测项", IdAddCustomBtn, 676, 404, 128, 30);
+            st->exportBtn = ui.button(L"导出报告 JSON…", IdExportJsonBtn, 676, 442, 128, 30);
+            EnableWindow(st->exportBtn, FALSE);
+
+            st->statusLabel = ui.label(L"", 16, 506, 520, 24);
+            st->startBtn = ui.button(L"开始探测", IdStartProbeBtn, 560, 500, 140, 34, true);
+            ui.button(L"关闭", IdCloseProbeBtn, 708, 500, 96, 34, false);
+
+            ui.applyFont(st->font);
+            st->populatePlannedMatrix();
+            return 0;
+        }
+        if (msg == WM_COMMAND && !st->busy) {
+            int id = LOWORD(wp);
+            int code = HIWORD(wp);
+            if (id == IdModeCombo && code == CBN_SELCHANGE) {
+                st->populatePlannedMatrix();
+                return 0;
+            }
+            if (id == IdAddCustomBtn) {
+                try {
+                    auto j = Json::parse(pk::getWindowTextUtf8(st->customBox));
+                    if (!j.is_object() || j.empty()) throw pk::PluginError("自定义参数必须是非空 JSON 对象");
+                    st->customCases.push_back(Json{{"label", "自定义组合 #" + std::to_string(st->customCases.size() + 1)}, {"overrides", j}});
+                    st->populatePlannedMatrix();
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"自定义参数校验");
+                }
+                return 0;
+            }
+            if (id == IdExportJsonBtn) {
+                if (auto p = pk::pickSinglePath(w, true, false, L"导出脱敏探测报告 JSON")) {
+                    std::string dumped;
+                    {
+                        std::lock_guard lk(st->mtx);
+                        dumped = st->lastReport.dump(2);
+                    }
+                    pk::writeFileAtomic(*p, std::span<const uint8_t>(
+                        reinterpret_cast<const uint8_t*>(dumped.data()), dumped.size()));
+                }
+                return 0;
+            }
+            if (id == IdStartProbeBtn) {
+                Json prov = st->pullWorkspaceProvider();
+                if (pk::trimAscii(prov.value("base_url", std::string())).empty()) {
+                    pk::showPanelError(w, "请先在主窗口右侧配置接口地址与 API 密钥", L"接口探测");
+                    return 0;
+                }
+                if (MessageBoxW(w, L"即将向目标接口发送真实生图请求以验证参数兼容性（会产生正常接口消耗）。\n是否立即开始？",
+                                L"确认执行接口探测", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+                    return 0;
+                }
+
+                bool genMode = (SendMessageW(st->modeCombo, CB_GETCURSEL, 0, 0) == 1);
+                Json probeArgs{
+                    {"generation_mode", genMode},
+                    {"provider", prov},
+                    {"custom_cases", st->customCases}
+                };
+
+                if (st->worker.joinable()) st->worker.join();
+                st->busy = true;
+                EnableWindow(st->startBtn, FALSE);
+                pk::setWindowTextUtf8(st->statusLabel, "正在逐项发送探测请求并校验响应…");
+
+                st->worker = std::thread([st, probeArgs = std::move(probeArgs)]() {
+                    Json rep;
+                    std::string err;
+                    try {
+                        rep = st->plugin->runMatrixProbe(probeArgs, nullptr);
+                    } catch (const std::exception& e) {
+                        err = e.what();
+                    }
+                    {
+                        std::lock_guard lk(st->mtx);
+                        st->lastReport = std::move(rep);
+                        st->lastErr = std::move(err);
+                    }
+                    if (st->hwnd && IsWindow(st->hwnd)) PostMessageW(st->hwnd, WM_PROBE_DONE, 0, 0);
+                });
+                return 0;
+            }
+            if (id == IdCloseProbeBtn || id == IDCANCEL) {
+                DestroyWindow(w);
+                return 0;
+            }
+        }
+        if (msg == WM_PROBE_DONE) {
+            if (st->worker.joinable()) st->worker.join();
+            st->busy = false;
+            EnableWindow(st->startBtn, TRUE);
+
+            Json rep;
+            std::string err;
+            {
+                std::lock_guard lk(st->mtx);
+                rep = st->lastReport;
+                err = st->lastErr;
+            }
+            if (!err.empty()) {
+                pk::setWindowTextUtf8(st->statusLabel, "探测中止");
+                pk::showPanelError(w, err, L"接口探测失败");
+            } else {
+                ListView_DeleteAllItems(st->matrixLv);
+                const auto& rows = rep.value("results", Json::array());
+                for (size_t i = 0; i < rows.size(); ++i) {
+                    const auto& r = rows[i];
+                    std::wstring wlab = pk::utf8ToWideLossy(r.value("label", ""));
+                    LVITEMW lvi{};
+                    lvi.mask = LVIF_TEXT;
+                    lvi.iItem = static_cast<int>(i);
+                    lvi.pszText = wlab.data();
+                    ListView_InsertItem(st->matrixLv, &lvi);
+
+                    std::wstring wov = pk::utf8ToWideLossy(r.value("overrides", Json::object()).dump());
+                    std::wstring wst = std::to_wstring(r.value("status", 0));
+                    std::wstring wout = pk::utf8ToWideLossy(r.value("outcome", ""));
+                    std::wstring wdet = pk::utf8ToWideLossy(r.value("detail", ""));
+                    ListView_SetItemText(st->matrixLv, static_cast<int>(i), 1, wov.data());
+                    ListView_SetItemText(st->matrixLv, static_cast<int>(i), 2, wst.data());
+                    ListView_SetItemText(st->matrixLv, static_cast<int>(i), 3, wout.data());
+                    ListView_SetItemText(st->matrixLv, static_cast<int>(i), 4, wdet.data());
+                }
+                EnableWindow(st->exportBtn, TRUE);
+                pk::setWindowTextUtf8(
+                    st->statusLabel,
+                    "探测完成（建议上传字段名：" + rep.value("recommended_image_field", std::string("image[]")) + "）");
+            }
+            return 0;
+        }
+        if (msg == WM_CLOSE) {
+            if (!st->busy) DestroyWindow(w);
+            return 0;
+        }
+        return DefWindowProcW(w, msg, wp, lp);
+    }
+
     static void MEMESTUDIO_CALL onDestroy(void* ctx) { delete static_cast<ProbePanelContext*>(ctx); }
 };
 
@@ -404,7 +635,7 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
             auto* pctx = new ProbePanelContext{self};
             if (self->host.raw()->open_panel(
                     self->host.raw()->host_ctx, "api-parameter-test", ownerHwnd,
-                    820, 600, "API 参数兼容性探测",
+                    820, 550, "API 参数兼容性探测",
                     ProbePanelContext::wndProc, pctx, ProbePanelContext::onDestroy) != 0) {
                 delete pctx;
                 throw pk::PluginError("无法打开参数探测面板");
