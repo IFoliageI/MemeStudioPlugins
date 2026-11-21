@@ -1,9 +1,11 @@
 #include "memestudio_plugin_kit.hpp"
 #include "../vendor/nlohmann/json.hpp"
 #include <iomanip>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -236,11 +238,269 @@ struct BatchConvertPlugin {
     }
 };
 
+enum BatchPanelId : int {
+    IdAddFilesBtn   = 3301,
+    IdAddDirBtn     = 3302,
+    IdRemItemBtn    = 3303,
+    IdClearQueueBtn = 3304,
+    IdQueueList     = 3305,
+    IdCharEdit      = 3306,
+    IdBrowseCharBtn = 3307,
+    IdOutDirEdit    = 3308,
+    IdBrowseOutBtn  = 3309,
+    IdPromptEdit    = 3310,
+    IdCountEdit     = 3311,
+    IdContinueCheck = 3312,
+    IdStartBatchBtn = 3313,
+    IdCloseBatchBtn = 3314
+};
+
+constexpr UINT WM_BATCH_DONE = WM_APP + 41;
+
 struct BatchPanelContext {
     BatchConvertPlugin* plugin = nullptr;
-    static intptr_t MEMESTUDIO_CALL wndProc(void*, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
-        return DefWindowProcW(static_cast<HWND>(rawHwnd), msg, wp, lp);
+    HWND hwnd = nullptr;
+    HFONT font = nullptr;
+    HWND queueLv = nullptr, charEdit = nullptr, outDirEdit = nullptr;
+    HWND promptEdit = nullptr, countEdit = nullptr, continueCheck = nullptr;
+    HWND statusLabel = nullptr, startBtn = nullptr;
+
+    std::vector<QueuedSourceItem> items;
+    std::thread worker;
+    bool busy = false;
+    std::mutex mtx;
+    Json lastReport = Json::object();
+    std::string lastErr;
+
+    ~BatchPanelContext() {
+        if (worker.joinable()) worker.join();
+        if (font) DeleteObject(font);
     }
+
+    void refreshListView() {
+        ListView_DeleteAllItems(queueLv);
+        for (size_t i = 0; i < items.size(); ++i) {
+            std::wstring idxName = std::to_wstring(i + 1) + L". " + items[i].path.filename().wstring();
+            LVITEMW lvi{};
+            lvi.mask = LVIF_TEXT;
+            lvi.iItem = static_cast<int>(i);
+            lvi.pszText = idxName.data();
+            ListView_InsertItem(queueLv, &lvi);
+
+            std::wstring kind = items[i].animated
+                ? (L"GIF (" + std::to_wstring(items[i].frames) + L" 帧)")
+                : L"静态图";
+            ListView_SetItemText(queueLv, static_cast<int>(i), 1, kind.data());
+            std::wstring full = items[i].path.wstring();
+            ListView_SetItemText(queueLv, static_cast<int>(i), 2, full.data());
+            ListView_SetItemText(queueLv, static_cast<int>(i), 3, const_cast<LPWSTR>(L"待处理"));
+        }
+        pk::setWindowTextUtf8(statusLabel, "当前队列共 " + std::to_string(items.size()) + " 个待转换素材");
+    }
+
+    void importPaths(const std::vector<pk::fs::path>& incoming) {
+        std::vector<pk::fs::path> merged;
+        for (const auto& ex : items) merged.push_back(ex.path);
+        merged.insert(merged.end(), incoming.begin(), incoming.end());
+
+        std::vector<QueuedSourceItem> acc;
+        std::vector<SkippedSourceItem> sk;
+        plugin->scanInputs(merged, acc, sk);
+        items = std::move(acc);
+        if (!items.empty() && pk::trimAscii(pk::getWindowTextUtf8(outDirEdit)).empty()) {
+            pk::fs::path suggested = items.front().path.parent_path() / L"MemeStudio-BatchOutput";
+            pk::setWindowTextUtf8(outDirEdit, pk::wideToUtf8(suggested.wstring()));
+        }
+        refreshListView();
+    }
+
+    static intptr_t MEMESTUDIO_CALL wndProc(void* ctx, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
+        auto* st = static_cast<BatchPanelContext*>(ctx);
+        HWND w = static_cast<HWND>(rawHwnd);
+        if (msg == WM_CREATE) {
+            st->hwnd = w;
+            pk::PanelBuilder ui(w);
+            st->font = pk::createDpiUiFont(ui.dpi().dpi, 14);
+
+            std::string initChar, initInst;
+            MemeStudioBytesV2 wsBytes{};
+            if (st->plugin->host.raw()->get_workspace_state(st->plugin->host.raw()->host_ctx, &wsBytes) == 0) {
+                try {
+                    auto ws = Json::parse(st->plugin->host.consumeBytesToString(wsBytes));
+                    initChar = ws.value("character_path", std::string());
+                    initInst = ws.value("instruction", std::string());
+                } catch (...) {}
+            }
+
+            ui.button(L"添加图片…", IdAddFilesBtn, 16, 14, 96, 28);
+            ui.button(L"导入文件夹…", IdAddDirBtn, 118, 14, 108, 28);
+            ui.button(L"移除选中", IdRemItemBtn, 232, 14, 86, 28);
+            ui.button(L"清空队列", IdClearQueueBtn, 324, 14, 86, 28);
+
+            st->queueLv = ui.reportListView(IdQueueList, 16, 50, 788, 250, {
+                {L"序号 / 素材名", 190},
+                {L"类型", 110},
+                {L"完整路径", 340},
+                {L"状态", 120}
+            });
+
+            ui.label(L"目标人物参考图：", 16, 314, 130, 22);
+            st->charEdit = ui.edit(IdCharEdit, 146, 310, 574, 26, initChar);
+            ui.button(L"选择…", IdBrowseCharBtn, 726, 310, 78, 26);
+
+            ui.label(L"批量输出文件夹：", 16, 350, 130, 22);
+            st->outDirEdit = ui.edit(IdOutDirEdit, 146, 346, 574, 26);
+            ui.button(L"浏览…", IdBrowseOutBtn, 726, 346, 78, 26);
+
+            ui.label(L"统一附加要求：", 16, 386, 130, 22);
+            st->promptEdit = ui.multilineEdit(IdPromptEdit, 146, 384, 658, 76, initInst, false);
+
+            ui.label(L"每素材生成份数：", 16, 474, 130, 22);
+            st->countEdit = ui.edit(IdCountEdit, 146, 470, 70, 26, "1", ES_NUMBER);
+            st->continueCheck = ui.checkbox(L"遇到单文件生成异常时自动记录并继续转换后续队列", IdContinueCheck, 236, 472, 420, 24, true);
+
+            st->statusLabel = ui.label(L"当前队列共 0 个待转换素材", 16, 514, 520, 24);
+            st->startBtn = ui.button(L"开始批量转换", IdStartBatchBtn, 560, 508, 144, 34, true);
+            ui.button(L"关闭", IdCloseBatchBtn, 712, 508, 92, 34, false);
+
+            ui.applyFont(st->font);
+            return 0;
+        }
+        if (msg == WM_COMMAND && !st->busy) {
+            int id = LOWORD(wp);
+            if (id == IdAddFilesBtn) {
+                auto picked = pk::pickMultiplePaths(w, L"选择待批量转换的表情图片或 GIF");
+                if (!picked.empty()) st->importPaths(picked);
+                return 0;
+            }
+            if (id == IdAddDirBtn) {
+                if (auto dir = pk::pickSinglePath(w, false, true, L"选择源表情所在文件夹")) {
+                    st->importPaths({*dir});
+                }
+                return 0;
+            }
+            if (id == IdRemItemBtn) {
+                int sel = ListView_GetNextItem(st->queueLv, -1, LVNI_SELECTED);
+                if (sel >= 0 && static_cast<size_t>(sel) < st->items.size()) {
+                    st->items.erase(st->items.begin() + sel);
+                    st->refreshListView();
+                }
+                return 0;
+            }
+            if (id == IdClearQueueBtn) {
+                st->items.clear();
+                st->refreshListView();
+                return 0;
+            }
+            if (id == IdBrowseCharBtn) {
+                if (auto p = pk::pickSinglePath(w, false, false, L"选择目标人物参考图")) {
+                    pk::setWindowTextUtf8(st->charEdit, pk::wideToUtf8(p->wstring()));
+                }
+                return 0;
+            }
+            if (id == IdBrowseOutBtn) {
+                if (auto d = pk::pickSinglePath(w, false, true, L"选择批量输出文件夹")) {
+                    pk::setWindowTextUtf8(st->outDirEdit, pk::wideToUtf8(d->wstring()));
+                }
+                return 0;
+            }
+            if (id == IdStartBatchBtn) {
+                try {
+                    if (st->items.empty()) throw pk::PluginError("请先添加待转换的源表情素材");
+                    std::string charStr = pk::trimAscii(pk::getWindowTextUtf8(st->charEdit));
+                    std::string outDirStr = pk::trimAscii(pk::getWindowTextUtf8(st->outDirEdit));
+                    if (charStr.empty()) throw pk::PluginError("请选择目标人物参考图");
+                    if (outDirStr.empty()) throw pk::PluginError("请指定批量输出文件夹");
+                    int count = pk::parseIntField(st->countEdit, "每素材生成份数", 1, 10);
+                    bool cont = pk::isButtonChecked(st->continueCheck);
+                    std::string inst = pk::getWindowTextUtf8(st->promptEdit);
+
+                    Json jobTpl{{"instruction", inst}};
+                    MemeStudioBytesV2 wsBytes{};
+                    if (st->plugin->host.raw()->get_workspace_state(st->plugin->host.raw()->host_ctx, &wsBytes) == 0) {
+                        try {
+                            auto ws = Json::parse(st->plugin->host.consumeBytesToString(wsBytes));
+                            if (ws.contains("provider") && ws["provider"].is_object()) {
+                                for (const auto& [pkK, pkV] : ws["provider"].items()) jobTpl[pkK] = pkV;
+                            }
+                        } catch (...) {}
+                    }
+
+                    Json srcArr = Json::array();
+                    for (const auto& it : st->items) srcArr.push_back(pk::wideToUtf8(it.path.wstring()));
+                    Json runArgs{
+                        {"sources", srcArr},
+                        {"character", charStr},
+                        {"output_directory", outDirStr},
+                        {"count", count},
+                        {"continue_on_error", cont},
+                        {"job_template", jobTpl}
+                    };
+
+                    if (st->worker.joinable()) st->worker.join();
+                    st->busy = true;
+                    EnableWindow(st->startBtn, FALSE);
+                    pk::setWindowTextUtf8(st->statusLabel, "正在后台执行批量转换队列…");
+
+                    st->worker = std::thread([st, runArgs = std::move(runArgs)]() {
+                        Json rep;
+                        std::string err;
+                        try {
+                            rep = st->plugin->runBatch(runArgs, nullptr);
+                        } catch (const std::exception& e) {
+                            err = e.what();
+                        }
+                        {
+                            std::lock_guard lk(st->mtx);
+                            st->lastReport = std::move(rep);
+                            st->lastErr = std::move(err);
+                        }
+                        if (st->hwnd && IsWindow(st->hwnd)) PostMessageW(st->hwnd, WM_BATCH_DONE, 0, 0);
+                    });
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"批量转换");
+                }
+                return 0;
+            }
+            if (id == IdCloseBatchBtn || id == IDCANCEL) {
+                DestroyWindow(w);
+                return 0;
+            }
+        }
+        if (msg == WM_BATCH_DONE) {
+            if (st->worker.joinable()) st->worker.join();
+            st->busy = false;
+            EnableWindow(st->startBtn, TRUE);
+            Json rep;
+            std::string err;
+            {
+                std::lock_guard lk(st->mtx);
+                rep = st->lastReport;
+                err = st->lastErr;
+            }
+            if (!err.empty()) {
+                pk::setWindowTextUtf8(st->statusLabel, "批量执行失败");
+                pk::showPanelError(w, err, L"批量转换失败");
+            } else {
+                const auto& resItems = rep.value("items", Json::array());
+                for (size_t i = 0; i < resItems.size() && i < st->items.size(); ++i) {
+                    std::wstring label = resItems[i].value("status", "") == "succeeded" ? L"已完成" : L"失败";
+                    ListView_SetItemText(st->queueLv, static_cast<int>(i), 3, label.data());
+                }
+                std::string summary = "批量完成：成功 " + std::to_string(rep.value("succeeded", 0)) +
+                                      " 项，失败 " + std::to_string(rep.value("failed", 0)) + " 项";
+                pk::setWindowTextUtf8(st->statusLabel, summary);
+                pk::showPanelInfo(w, summary, L"批量转换完成");
+            }
+            return 0;
+        }
+        if (msg == WM_CLOSE) {
+            if (!st->busy) DestroyWindow(w);
+            return 0;
+        }
+        return DefWindowProcW(w, msg, wp, lp);
+    }
+
     static void MEMESTUDIO_CALL onDestroy(void* ctx) {
         delete static_cast<BatchPanelContext*>(ctx);
     }

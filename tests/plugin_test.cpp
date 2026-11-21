@@ -11,6 +11,15 @@ int wmain(int argc, wchar_t** argv) {
         meme::test_harness::LoadedPluginUnderTest plugin(argv[1], env);
         pk::HostClient helper(&env.table, plugin.desc->id);
 
+        // 0. Verify GUI panel populates full queue manager controls (never blank!)
+        MemeStudioBytesV2 guiRes{}, guiErr{};
+        if (plugin.desc->invoke_command(plugin.instance, "open-panel", "{}", nullptr, nullptr, &guiRes, &guiErr) != 0 ||
+            env.lastOpenedPanelChildCount < 14) {
+            std::cerr << "batch-convert panel blank! children=" << env.lastOpenedPanelChildCount << "\n";
+            return 1;
+        }
+        helper.consumeBytesToString(guiRes);
+
         auto inDir = env.sandboxDir / L"inputs";
         auto outDir = env.sandboxDir / L"outputs";
         auto charFile = env.sandboxDir / L"character.png";
