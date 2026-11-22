@@ -46,6 +46,15 @@ int wmain(int argc, wchar_t** argv) {
         meme::test_harness::LoadedPluginUnderTest plugin(argv[1], env);
         pk::HostClient helper(&env.table, plugin.desc->id);
 
+        // 0. Verify GUI panel populates permission checkboxes, quota fields & service buttons (never blank!)
+        MemeStudioBytesV2 guiRes{}, guiErr{};
+        if (plugin.desc->invoke_command(plugin.instance, "open-panel", "{}", nullptr, nullptr, &guiRes, &guiErr) != 0 ||
+            env.lastOpenedPanelChildCount < 14) {
+            std::cerr << "automation-harness panel blank! children=" << env.lastOpenedPanelChildCount << "\n";
+            return 1;
+        }
+        helper.consumeBytesToString(guiRes);
+
         // 1. BUG-24 Regression check: Seed a future UTC date ("2099-12-31") in quota_ledger.json
         //    to simulate system clock rollback — ledger MUST self-heal to 0 instead of bricking!
         std::string futureLedger = R"({"utc_date":"2099-12-31","used":999})";

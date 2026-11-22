@@ -6,6 +6,7 @@
 #include <ctime>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -440,11 +441,157 @@ struct HarnessPlugin {
     }
 };
 
+enum HarnessPanelId : int {
+    IdSrvToggleBtn   = 3801,
+    IdSrvStopBtn     = 3802,
+    IdInspectCheck   = 3803,
+    IdModelsCheck    = 3804,
+    IdReplaceCheck   = 3805,
+    IdSwitchModCheck = 3806,
+    IdAllowModEdit   = 3807,
+    IdMaxTaskEdit    = 3808,
+    IdMaxDayEdit     = 3809,
+    IdSavePolicyBtn  = 3810,
+    IdClosePolBtn    = 3811
+};
+
 struct HarnessPanelContext {
     HarnessPlugin* plugin = nullptr;
-    static intptr_t MEMESTUDIO_CALL wndProc(void*, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
-        return DefWindowProcW(static_cast<HWND>(rawHwnd), msg, wp, lp);
+    HWND hwnd = nullptr;
+    HFONT font = nullptr;
+
+    HWND srvStatusLabel = nullptr, quotaLabel = nullptr;
+    HWND inspectChk = nullptr, modelsChk = nullptr, replaceChk = nullptr, switchModChk = nullptr;
+    HWND allowModEdit = nullptr, maxTaskEdit = nullptr, maxDayEdit = nullptr;
+
+    ~HarnessPanelContext() {
+        if (font) DeleteObject(font);
     }
+
+    static std::string joinCsv(const std::vector<std::string>& v) {
+        std::string out;
+        for (size_t i = 0; i < v.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += v[i];
+        }
+        return out;
+    }
+
+    void refreshLiveStatus() {
+        bool running = plugin->serverRunning.load(std::memory_order_acquire);
+        std::string pipeStr = pk::wideToUtf8(plugin->pipeName);
+        pk::setWindowTextUtf8(
+            srvStatusLabel,
+            running ? ("监听状态：运行中 (" + pipeStr + ")") : "监听状态：已停止");
+
+        HarnessPolicy snap;
+        {
+            std::lock_guard lk(plugin->mutex);
+            snap = plugin->policy;
+        }
+        int used = plugin->ledger.usedToday();
+        pk::setWindowTextUtf8(
+            quotaLabel,
+            "今日累计已调用额度：" + std::to_string(used) + " / " + std::to_string(snap.maxPerDay) + " 次");
+    }
+
+    HarnessPolicy gatherPolicy() const {
+        HarnessPolicy p;
+        p.allowInspect = pk::isButtonChecked(inspectChk);
+        p.allowModels  = pk::isButtonChecked(modelsChk);
+        p.allowReplace = pk::isButtonChecked(replaceChk);
+        p.allowSwitchModel = pk::isButtonChecked(switchModChk);
+        p.maxPerTask = pk::parseIntField(maxTaskEdit, "单任务最大张数上限", 1, 10000);
+        p.maxPerDay  = pk::parseIntField(maxDayEdit, "每日最大调用上限", 1, 10000);
+
+        std::istringstream ss(pk::getWindowTextUtf8(allowModEdit));
+        std::string item;
+        while (std::getline(ss, item, ',')) {
+            std::string clean = pk::trimAscii(item);
+            if (!clean.empty()) p.allowedModels.push_back(std::move(clean));
+        }
+        return p;
+    }
+
+    static intptr_t MEMESTUDIO_CALL wndProc(void* ctx, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
+        auto* st = static_cast<HarnessPanelContext*>(ctx);
+        HWND w = static_cast<HWND>(rawHwnd);
+        if (msg == WM_CREATE) {
+            st->hwnd = w;
+            pk::PanelBuilder ui(w);
+            st->font = pk::createDpiUiFont(ui.dpi().dpi, 14);
+
+            HarnessPolicy cur;
+            {
+                std::lock_guard lk(st->plugin->mutex);
+                cur = st->plugin->policy;
+            }
+
+            st->srvStatusLabel = ui.label(L"", 16, 16, 360, 22);
+            ui.button(L"启动服务", IdSrvToggleBtn, 382, 12, 80, 28);
+            ui.button(L"停止服务", IdSrvStopBtn, 468, 12, 76, 28);
+
+            ui.label(L"同账户客户端允许的操作范围（默认最小权限）：", 16, 54, 420, 20);
+            st->inspectChk   = ui.checkbox(L"允许读取本地图像宽高与帧数元数据 (inspect)", IdInspectCheck, 24, 80, 480, 24, cur.allowInspect);
+            st->modelsChk    = ui.checkbox(L"允许查询当前可用模型列表 (models)", IdModelsCheck, 24, 108, 480, 24, cur.allowModels);
+            st->replaceChk   = ui.checkbox(L"允许提交角色替换生图任务 (replace，仍需传入 confirmed=true)", IdReplaceCheck, 24, 136, 510, 24, cur.allowReplace);
+            st->switchModChk = ui.checkbox(L"允许外部调用指定自定义模型名称", IdSwitchModCheck, 24, 164, 480, 24, cur.allowSwitchModel);
+
+            ui.label(L"允许切换的模型白名单（逗号分隔，留空表示不限制具体模型名）：", 16, 202, 500, 20);
+            st->allowModEdit = ui.edit(IdAllowModEdit, 16, 224, 528, 26, joinCsv(cur.allowedModels));
+
+            ui.label(L"单次任务张数上限：", 16, 268, 140, 20);
+            st->maxTaskEdit = ui.edit(IdMaxTaskEdit, 156, 264, 96, 26, std::to_string(cur.maxPerTask), ES_NUMBER);
+
+            ui.label(L"每日累计调用上限：", 280, 268, 140, 20);
+            st->maxDayEdit = ui.edit(IdMaxDayEdit, 420, 264, 124, 26, std::to_string(cur.maxPerDay), ES_NUMBER);
+
+            st->quotaLabel = ui.label(L"", 16, 308, 528, 22);
+
+            ui.button(L"保存权限设置", IdSavePolicyBtn, 326, 348, 118, 34, true);
+            ui.button(L"关闭", IdClosePolBtn, 452, 348, 92, 34, false);
+
+            ui.applyFont(st->font);
+            st->refreshLiveStatus();
+            return 0;
+        }
+        if (msg == WM_COMMAND) {
+            int id = LOWORD(wp);
+            if (id == IdSrvToggleBtn) {
+                try {
+                    st->plugin->startServer();
+                    st->refreshLiveStatus();
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"启动命名管道服务");
+                }
+                return 0;
+            }
+            if (id == IdSrvStopBtn) {
+                st->plugin->stopServer();
+                st->refreshLiveStatus();
+                return 0;
+            }
+            if (id == IdSavePolicyBtn) {
+                try {
+                    st->plugin->savePolicyToDisk(st->gatherPolicy());
+                    DestroyWindow(w);
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"保存权限策略");
+                }
+                return 0;
+            }
+            if (id == IdClosePolBtn || id == IDCANCEL) {
+                DestroyWindow(w);
+                return 0;
+            }
+        }
+        if (msg == WM_CLOSE) {
+            DestroyWindow(w);
+            return 0;
+        }
+        return DefWindowProcW(w, msg, wp, lp);
+    }
+
     static void MEMESTUDIO_CALL onDestroy(void* ctx) { delete static_cast<HarnessPanelContext*>(ctx); }
 };
 
@@ -474,7 +621,7 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
             auto* pctx = new HarnessPanelContext{self};
             if (self->host.raw()->open_panel(
                     self->host.raw()->host_ctx, "automation-harness", ownerHwnd,
-                    560, 480, "本地自动化桥接权限与配额",
+                    560, 400, "本地自动化桥接权限与配额",
                     HarnessPanelContext::wndProc, pctx, HarnessPanelContext::onDestroy) != 0) {
                 delete pctx;
                 throw pk::PluginError("无法打开自动化权限面板");
