@@ -11,6 +11,15 @@ int wmain(int argc, wchar_t** argv) {
         meme::test_harness::LoadedPluginUnderTest plugin(argv[1], env);
         pk::HostClient helper(&env.table, plugin.desc->id);
 
+        // 0. Verify GUI panel populates all GGUF paths, runtime controls & log viewer (never blank!)
+        MemeStudioBytesV2 guiRes{}, guiErr{};
+        if (plugin.desc->invoke_command(plugin.instance, "open-panel", "{}", nullptr, nullptr, &guiRes, &guiErr) != 0 ||
+            env.lastOpenedPanelChildCount < 25) {
+            std::cerr << "local sd-server panel blank! children=" << env.lastOpenedPanelChildCount << "\n";
+            return 1;
+        }
+        helper.consumeBytesToString(guiRes);
+
         // 1. Verify 100% AppData isolation (BUG-15 fix): zero config/log files written into plugin stageDir!
         auto modelDir = env.sandboxDir / L"models";
         pk::fs::create_directories(modelDir);

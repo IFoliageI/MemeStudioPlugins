@@ -546,6 +546,229 @@ struct QwenImagePlugin {
     }
 };
 
+template <typename PluginT>
+struct LocalSdEnginePanel {
+    PluginT* plugin = nullptr;
+    HWND hwnd = nullptr;
+    HFONT font = nullptr;
+
+    HWND sdExe = nullptr, modelDir = nullptr, diffEdit = nullptr, vaeEdit = nullptr, llmEdit = nullptr, mmprojEdit = nullptr;
+    HWND portEdit = nullptr, aliasEdit = nullptr, stepsEdit = nullptr, cfgEdit = nullptr;
+    HWND turboCheck = nullptr, takeoverCheck = nullptr, logBox = nullptr, statusLabel = nullptr;
+
+    ~LocalSdEnginePanel() {
+        if (font) DeleteObject(font);
+    }
+
+    enum ControlIds : int {
+        IdSdExeEdit      = 3701,
+        IdPickSdExeBtn   = 3702,
+        IdModelDirEdit   = 3703,
+        IdPickModelDir   = 3704,
+        IdScanDirBtn     = 3705,
+        IdDiffEdit       = 3706,
+        IdPickDiffBtn    = 3707,
+        IdVaeEdit        = 3708,
+        IdPickVaeBtn     = 3709,
+        IdLlmEdit        = 3710,
+        IdPickLlmBtn     = 3711,
+        IdMmprojEdit     = 3712,
+        IdPickMmprojBtn  = 3713,
+        IdPortEdit       = 3714,
+        IdAliasEdit      = 3715,
+        IdStepsEdit      = 3716,
+        IdCfgEdit        = 3717,
+        IdTurboCheck     = 3718,
+        IdTakeoverCheck  = 3719,
+        IdLogViewer      = 3720,
+        IdRefreshLogBtn  = 3721,
+        IdStartSrvBtn    = 3722,
+        IdStopSrvBtn     = 3723,
+        IdSaveCfgBtn     = 3724,
+        IdClosePanelBtn  = 3725
+    };
+
+    Json gatherFormJson(bool forceTakeoverOnStart = false) const {
+        int port = pk::parseIntField(portEdit, "监听端口", 1024, 65535);
+        int steps = pk::parseIntField(stepsEdit, "推理步数", 1, 100);
+        double cfg = pk::parseDoubleField(cfgEdit, "CFG 系数", 1.0, 30.0);
+        std::string alias = pk::trimAscii(pk::getWindowTextUtf8(aliasEdit));
+        if (alias.empty()) alias = "local-sdcpp-model";
+
+        return Json{
+            {"sd_executable", pk::trimAscii(pk::getWindowTextUtf8(sdExe))},
+            {"model_directory", pk::trimAscii(pk::getWindowTextUtf8(modelDir))},
+            {"diffusion_model", pk::trimAscii(pk::getWindowTextUtf8(diffEdit))},
+            {"vae", pk::trimAscii(pk::getWindowTextUtf8(vaeEdit))},
+            {"llm", pk::trimAscii(pk::getWindowTextUtf8(llmEdit))},
+            {"mmproj", pk::trimAscii(pk::getWindowTextUtf8(mmprojEdit))},
+            {"port", port},
+            {"model_alias", alias},
+            {"steps", steps},
+            {"cfg_scale", cfg},
+            {"turbo", pk::isButtonChecked(turboCheck)},
+            {"session_takeover", forceTakeoverOnStart ? true : pk::isButtonChecked(takeoverCheck)}
+        };
+    }
+
+    void refreshStatusAndLog() {
+        bool running = false;
+        uint32_t pid = 0;
+        {
+            std::lock_guard lk(plugin->mutex);
+            running = plugin->daemon.isRunning();
+            pid = plugin->daemon.pid();
+        }
+        std::string stText = running
+            ? ("引擎状态：运行中 (PID " + std::to_string(pid) + ") · 数据目录隔离于 %LOCALAPPDATA%")
+            : "引擎状态：未启动 · 所有日志与配置均安全隔离在 %LOCALAPPDATA%";
+        pk::setWindowTextUtf8(statusLabel, stText);
+
+        std::string tail = pk::readFileTailLossyUtf8(plugin->logFilePath(), 16 * 1024);
+        pk::setWindowTextUtf8(logBox, tail.empty() ? "（暂无 sd-server 运行日志）" : tail);
+    }
+
+    static intptr_t MEMESTUDIO_CALL wndProc(void* ctx, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
+        auto* st = static_cast<LocalSdEnginePanel*>(ctx);
+        HWND w = static_cast<HWND>(rawHwnd);
+        if (msg == WM_CREATE) {
+            st->hwnd = w;
+            pk::PanelBuilder ui(w);
+            st->font = pk::createDpiUiFont(ui.dpi().dpi, 14);
+
+            auto cur = [&]() {
+                std::lock_guard lk(st->plugin->mutex);
+                return st->plugin->config;
+            }();
+
+            ui.label(L"sd-server.exe 路径：", 16, 16, 145, 20);
+            st->sdExe = ui.edit(IdSdExeEdit, 162, 12, 518, 26, pk::wideToUtf8(cur.sdServerExe.wstring()));
+            ui.button(L"浏览…", IdPickSdExeBtn, 686, 12, 78, 26);
+
+            ui.label(L"GGUF 模型目录：", 16, 48, 145, 20);
+            st->modelDir = ui.edit(IdModelDirEdit, 162, 44, 434, 26, pk::wideToUtf8(cur.modelDirectory.wstring()));
+            ui.button(L"选择…", IdPickModelDir, 602, 44, 78, 26);
+            ui.button(L"自动扫描", IdScanDirBtn, 686, 44, 78, 26);
+
+            ui.label(L"扩散模型权重：", 16, 80, 145, 20);
+            st->diffEdit = ui.edit(IdDiffEdit, 162, 76, 518, 26, pk::wideToUtf8(cur.diffusionModel.wstring()));
+            ui.button(L"选择…", IdPickDiffBtn, 686, 76, 78, 26);
+
+            ui.label(L"VAE 权重 (可选)：", 16, 112, 145, 20);
+            st->vaeEdit = ui.edit(IdVaeEdit, 162, 108, 518, 26, pk::wideToUtf8(cur.vaePath.wstring()));
+            ui.button(L"选择…", IdPickVaeBtn, 686, 108, 78, 26);
+
+            ui.label(L"文本编码器 LLM：", 16, 144, 145, 20);
+            st->llmEdit = ui.edit(IdLlmEdit, 162, 140, 518, 26, pk::wideToUtf8(cur.llmPath.wstring()));
+            ui.button(L"选择…", IdPickLlmBtn, 686, 140, 78, 26);
+
+            ui.label(L"视觉投影 mmproj：", 16, 176, 145, 20);
+            st->mmprojEdit = ui.edit(IdMmprojEdit, 162, 172, 518, 26, pk::wideToUtf8(cur.mmprojPath.wstring()));
+            ui.button(L"选择…", IdPickMmprojBtn, 686, 172, 78, 26);
+
+            ui.label(L"本地端口：", 16, 214, 80, 20);
+            st->portEdit = ui.edit(IdPortEdit, 96, 210, 76, 26, std::to_string(cur.port), ES_NUMBER);
+            ui.label(L"模型别名：", 188, 214, 80, 20);
+            st->aliasEdit = ui.edit(IdAliasEdit, 268, 210, 170, 26, cur.modelAlias);
+            ui.label(L"步数：", 454, 214, 48, 20);
+            st->stepsEdit = ui.edit(IdStepsEdit, 502, 210, 62, 26, std::to_string(cur.steps), ES_NUMBER);
+            ui.label(L"CFG：", 580, 214, 46, 20);
+            char cfgBuf[32]{};
+            std::snprintf(cfgBuf, sizeof(cfgBuf), "%.2g", cur.cfgScale);
+            st->cfgEdit = ui.edit(IdCfgEdit, 626, 210, 62, 26, cfgBuf);
+
+            st->turboCheck = ui.checkbox(L"启用 Turbo 8步极速采样时间表", IdTurboCheck, 16, 246, 250, 24, cur.turboPreset);
+            st->takeoverCheck = ui.checkbox(L"接管当前主界面会话连接（不覆盖已保存商业密钥）", IdTakeoverCheck, 286, 246, 420, 24, cur.sessionTakeover);
+
+            ui.label(L"sd-server 尾部日志：", 16, 280, 200, 20);
+            ui.button(L"刷新日志", IdRefreshLogBtn, 686, 276, 78, 24);
+            st->logBox = ui.multilineEdit(IdLogViewer, 16, 304, 748, 176, "", true);
+
+            st->statusLabel = ui.label(L"", 16, 492, 748, 22);
+            ui.button(L"启动引擎并接管", IdStartSrvBtn, 290, 522, 136, 34, true);
+            ui.button(L"停止并释放显存", IdStopSrvBtn, 434, 522, 132, 34);
+            ui.button(L"仅保存设置", IdSaveCfgBtn, 574, 522, 102, 34);
+            ui.button(L"关闭", IdClosePanelBtn, 684, 522, 80, 34);
+
+            ui.applyFont(st->font);
+            st->refreshStatusAndLog();
+            return 0;
+        }
+        if (msg == WM_COMMAND) {
+            int id = LOWORD(wp);
+            auto pickToEdit = [&](HWND targetEdit, bool folder, const wchar_t* promptTitle) {
+                if (auto p = pk::pickSinglePath(w, false, folder, promptTitle)) {
+                    pk::setWindowTextUtf8(targetEdit, pk::wideToUtf8(p->wstring()));
+                }
+            };
+            if (id == IdPickSdExeBtn)  { pickToEdit(st->sdExe, false, L"选择 sd-server.exe"); return 0; }
+            if (id == IdPickModelDir)  { pickToEdit(st->modelDir, true, L"选择 GGUF 模型文件夹"); return 0; }
+            if (id == IdPickDiffBtn)   { pickToEdit(st->diffEdit, false, L"选择扩散模型文件"); return 0; }
+            if (id == IdPickVaeBtn)    { pickToEdit(st->vaeEdit, false, L"选择 VAE 权重文件"); return 0; }
+            if (id == IdPickLlmBtn)    { pickToEdit(st->llmEdit, false, L"选择 LLM 文本编码器"); return 0; }
+            if (id == IdPickMmprojBtn) { pickToEdit(st->mmprojEdit, false, L"选择视觉投影 mmproj"); return 0; }
+
+            if (id == IdScanDirBtn) {
+                try {
+                    auto scanCfg = [&]() {
+                        std::lock_guard lk(st->plugin->mutex);
+                        return st->plugin->config;
+                    }();
+                    scanCfg.diffusionModel.clear();
+                    scanCfg.modelDirectory = pk::utf8ToWideStrict(pk::trimAscii(pk::getWindowTextUtf8(st->modelDir)));
+                    Json rep = st->plugin->inspectModels(scanCfg);
+                    if (!rep["diffusion_candidates"].empty()) pk::setWindowTextUtf8(st->diffEdit, rep["diffusion_candidates"][0].get<std::string>());
+                    if (!rep["vae_candidates"].empty()) pk::setWindowTextUtf8(st->vaeEdit, rep["vae_candidates"][0].get<std::string>());
+                    if (!rep["llm_candidates"].empty()) pk::setWindowTextUtf8(st->llmEdit, rep["llm_candidates"][0].get<std::string>());
+                    if (!rep["mmproj_candidates"].empty()) pk::setWindowTextUtf8(st->mmprojEdit, rep["mmproj_candidates"][0].get<std::string>());
+                    pk::showPanelInfo(w, "模型目录扫描完成，已填入检测到的候选组件。", L"扫描完成");
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"模型目录扫描");
+                }
+                return 0;
+            }
+            if (id == IdRefreshLogBtn) { st->refreshStatusAndLog(); return 0; }
+            if (id == IdStartSrvBtn) {
+                try {
+                    pk::setButtonChecked(st->takeoverCheck, true);
+                    st->plugin->updateConfig(st->gatherFormJson(true), true);
+                    st->plugin->startLocalServer();
+                    st->refreshStatusAndLog();
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"启动本地推理服务");
+                }
+                return 0;
+            }
+            if (id == IdStopSrvBtn) {
+                st->plugin->stopLocalServer();
+                pk::setButtonChecked(st->takeoverCheck, false);
+                st->refreshStatusAndLog();
+                return 0;
+            }
+            if (id == IdSaveCfgBtn) {
+                try {
+                    st->plugin->updateConfig(st->gatherFormJson(false), true);
+                    DestroyWindow(w);
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"保存设置");
+                }
+                return 0;
+            }
+            if (id == IdClosePanelBtn || id == IDCANCEL) {
+                DestroyWindow(w);
+                return 0;
+            }
+        }
+        if (msg == WM_CLOSE) {
+            DestroyWindow(w);
+            return 0;
+        }
+        return DefWindowProcW(w, msg, wp, lp);
+    }
+
+    static void MEMESTUDIO_CALL onDestroy(void* ctx) { delete static_cast<LocalSdEnginePanel*>(ctx); }
+};
+
 struct QwenPanelContext {
     QwenImagePlugin* plugin = nullptr;
     static intptr_t MEMESTUDIO_CALL wndProc(void*, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
@@ -576,12 +799,14 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
         std::string cmd(commandId);
         Json args = (argsJson && argsJson[0]) ? Json::parse(argsJson) : Json::object();
 
+        
         if (cmd == "open-panel") {
-            auto* pctx = new QwenPanelContext{self};
+            using PanelT = LocalSdEnginePanel<std::remove_pointer_t<decltype(self)>>;
+            auto* pctx = new PanelT{self};
             if (self->host.raw()->open_panel(
-                    self->host.raw()->host_ctx, "antigravity-image", ownerHwnd,
-                    780, 580, "Qwen-Image 本地推理配置",
-                    QwenPanelContext::wndProc, pctx, QwenPanelContext::onDestroy) != 0) {
+                    self->host.raw()->host_ctx, "local-sd-engine", ownerHwnd,
+                    780, 572, "本地 GGUF 推理引擎配置",
+                    PanelT::wndProc, pctx, PanelT::onDestroy) != 0) {
                 delete pctx;
                 throw pk::PluginError("无法打开本地推理面板");
             }
