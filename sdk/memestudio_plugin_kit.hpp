@@ -8,18 +8,24 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <commctrl.h>
+#include <windowsx.h>
 #include <bcrypt.h>
 #include <shobjidl.h>
 #include <wincrypt.h>
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <initializer_list>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -352,7 +358,7 @@ public:
     }
 };
 
-// ==================== Shared DPI & Win32 UI Helpers ====================
+// ==================== Shared DPI & Win32 UI Panel Builder ====================
 
 struct DpiScale {
     UINT dpi = 96;
@@ -390,6 +396,344 @@ inline void setWindowTextUtf8(HWND hwnd, std::string_view text) {
     SetWindowTextW(hwnd, w.c_str());
 }
 
+inline bool isButtonChecked(HWND hwnd) noexcept {
+    return hwnd && SendMessageW(hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+inline void setButtonChecked(HWND hwnd, bool checked) noexcept {
+    if (hwnd) SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+inline int parseIntField(HWND hwnd, std::string_view label, int minVal, int maxVal) {
+    std::string s = trimAscii(getWindowTextUtf8(hwnd));
+    if (s.empty()) throw PluginError("请填写「" + std::string(label) + "」");
+    int v = 0;
+    auto [p, ec] = std::from_chars(s.data(), s.data() + s.size(), v);
+    if (ec != std::errc{} || p != s.data() + s.size() || v < minVal || v > maxVal) {
+        throw PluginError("「" + std::string(label) + "」必须是 " + std::to_string(minVal) + ".." + std::to_string(maxVal) + " 之间的整数");
+    }
+    return v;
+}
+
+inline double parseDoubleField(HWND hwnd, std::string_view label, double minVal, double maxVal) {
+    std::string s = trimAscii(getWindowTextUtf8(hwnd));
+    if (s.empty()) throw PluginError("请填写「" + std::string(label) + "」");
+    double v = 0.0;
+    auto [p, ec] = std::from_chars(s.data(), s.data() + s.size(), v);
+    if (ec != std::errc{} || p != s.data() + s.size() || !std::isfinite(v) || v < minVal || v > maxVal) {
+        throw PluginError("「" + std::string(label) + "」数值无效或超出允许范围");
+    }
+    return v;
+}
+
+inline void showPanelError(HWND owner, std::string_view msgUtf8, const wchar_t* title = L"操作提示") noexcept {
+    std::wstring wm = utf8ToWideLossy(msgUtf8);
+    MessageBoxW(owner, wm.c_str(), title, MB_OK | MB_ICONERROR);
+}
+
+inline void showPanelInfo(HWND owner, std::string_view msgUtf8, const wchar_t* title = L"提示") noexcept {
+    std::wstring wm = utf8ToWideLossy(msgUtf8);
+    MessageBoxW(owner, wm.c_str(), title, MB_OK | MB_ICONINFORMATION);
+}
+
+class PanelBuilder {
+    HWND parent_ = nullptr;
+    HINSTANCE inst_ = nullptr;
+    DpiScale dpi_;
+public:
+    explicit PanelBuilder(HWND parent)
+        : parent_(parent),
+          inst_(reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(parent, GWLP_HINSTANCE))),
+          dpi_(parent) {
+        INITCOMMONCONTROLSEX icc{sizeof(INITCOMMONCONTROLSEX), ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS};
+        InitCommonControlsEx(&icc);
+    }
+
+    const DpiScale& dpi() const noexcept { return dpi_; }
+
+    HWND label(const wchar_t* text, int x, int y, int w, int h = 20) const {
+        return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS,
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(h), parent_, nullptr, inst_, nullptr);
+    }
+
+    HWND button(const wchar_t* text, int id, int x, int y, int w, int h = 28, bool isDefault = false) const {
+        return CreateWindowExW(0, L"BUTTON", text,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | (isDefault ? BS_DEFPUSHBUTTON : 0),
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(h),
+            parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+    }
+
+    HWND checkbox(const wchar_t* text, int id, int x, int y, int w, int h = 22, bool checked = false) const {
+        HWND b = CreateWindowExW(0, L"BUTTON", text,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(h),
+            parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+        setButtonChecked(b, checked);
+        return b;
+    }
+
+    HWND edit(int id, int x, int y, int w, int h = 26, std::string_view initial = "", DWORD extraStyle = ES_AUTOHSCROLL) const {
+        HWND e = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | extraStyle,
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(h),
+            parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+        if (!initial.empty()) setWindowTextUtf8(e, initial);
+        return e;
+    }
+
+    HWND multilineEdit(int id, int x, int y, int w, int h, std::string_view initial = "", bool readOnly = false) const {
+        DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL;
+        style |= readOnly ? ES_READONLY : ES_WANTRETURN; // Always enable ES_WANTRETURN when editable!
+        HWND e = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", style,
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(h),
+            parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+        if (!initial.empty()) setWindowTextUtf8(e, initial);
+        return e;
+    }
+
+    HWND combo(int id, int x, int y, int w, int dropH, std::initializer_list<const wchar_t*> items, int selIdx = 0, bool editable = false) const {
+        HWND c = CreateWindowExW(0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | (editable ? (CBS_DROPDOWN | CBS_AUTOHSCROLL) : CBS_DROPDOWNLIST),
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(dropH),
+            parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+        for (const wchar_t* item : items) {
+            SendMessageW(c, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item));
+        }
+        if (selIdx >= 0 && items.size() > 0) {
+            SendMessageW(c, CB_SETCURSEL, static_cast<WPARAM>(selIdx), 0);
+        }
+        return c;
+    }
+
+    HWND listBox(int id, int x, int y, int w, int h) const {
+        return CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | WS_VSCROLL,
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(h),
+            parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+    }
+
+    HWND reportListView(int id, int x, int y, int w, int h,
+                        std::initializer_list<std::pair<const wchar_t*, int>> colsDip,
+                        bool checkboxes = false) const {
+        HWND lv = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            dpi_.px(x), dpi_.px(y), dpi_.px(w), dpi_.px(h),
+            parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+        DWORD ex = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES;
+        if (checkboxes) ex |= LVS_EX_CHECKBOXES;
+        ListView_SetExtendedListViewStyle(lv, ex);
+        int colIdx = 0;
+        for (const auto& [title, widthDip] : colsDip) {
+            LVCOLUMNW col{};
+            col.mask = LVCF_TEXT | LVCF_WIDTH;
+            col.pszText = const_cast<LPWSTR>(title);
+            col.cx = dpi_.px(widthDip);
+            ListView_InsertColumn(lv, colIdx++, &col);
+        }
+        return lv;
+    }
+
+    void applyFont(HFONT font) const noexcept {
+        if (!parent_ || !font) return;
+        EnumChildWindows(parent_, [](HWND child, LPARAM lp) -> BOOL {
+            SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(lp), TRUE);
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(font));
+    }
+};
+
+// Cached DIBSection preview & drag-box selection canvas for standalone plugin panels
+class PluginPreviewCanvas {
+    HWND hwnd_ = nullptr;
+    HBITMAP dib_ = nullptr;
+    uint32_t imgW_ = 0;
+    uint32_t imgH_ = 0;
+    bool allowCrop_ = false;
+    bool dragging_ = false;
+    POINT dragStart_{};
+    RECT drawnRc_{};
+    NormalizedRect region_{0.0, 0.0, 1.0, 1.0};
+    std::wstring hint_ = L"未加载预览图像";
+    std::function<void(const NormalizedRect&)> onRegionChanged_;
+
+    void freeDib() noexcept {
+        if (dib_) { DeleteObject(dib_); dib_ = nullptr; }
+        imgW_ = imgH_ = 0;
+    }
+
+    static LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
+        auto* self = reinterpret_cast<PluginPreviewCanvas*>(GetWindowLongPtrW(w, GWLP_USERDATA));
+        if (!self) return DefWindowProcW(w, msg, wp, lp);
+
+        if (msg == WM_ERASEBKGND) return 1;
+        if (msg == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(w, &ps);
+            RECT rc{};
+            GetClientRect(w, &rc);
+            int cw = std::max<int>(1, rc.right - rc.left);
+            int ch = std::max<int>(1, rc.bottom - rc.top);
+
+            HDC mem = CreateCompatibleDC(dc);
+            HBITMAP back = CreateCompatibleBitmap(dc, cw, ch);
+            auto oldBmp = SelectObject(mem, back);
+
+            HBRUSH bg = CreateSolidBrush(RGB(246, 248, 250));
+            FillRect(mem, &rc, bg);
+            DeleteObject(bg);
+
+            if (self->dib_ && self->imgW_ > 0 && self->imgH_ > 0) {
+                double sc = std::min(double(cw - 12) / self->imgW_, double(ch - 12) / self->imgH_);
+                int dw = std::max(1, int(std::lround(self->imgW_ * sc)));
+                int dh = std::max(1, int(std::lround(self->imgH_ * sc)));
+                int dx = (cw - dw) / 2;
+                int dy = (ch - dh) / 2;
+                self->drawnRc_ = {dx, dy, dx + dw, dy + dh};
+
+                HDC srcDc = CreateCompatibleDC(mem);
+                auto oldSrc = SelectObject(srcDc, self->dib_);
+                SetStretchBltMode(mem, HALFTONE);
+                StretchBlt(mem, dx, dy, dw, dh, srcDc, 0, 0, int(self->imgW_), int(self->imgH_), SRCCOPY);
+                SelectObject(srcDc, oldSrc);
+                DeleteDC(srcDc);
+
+                if (self->allowCrop_) {
+                    RECT sel{
+                        dx + int(std::lround(self->region_.x * dw)),
+                        dy + int(std::lround(self->region_.y * dh)),
+                        dx + int(std::lround((self->region_.x + self->region_.width) * dw)),
+                        dy + int(std::lround((self->region_.y + self->region_.height) * dh))
+                    };
+                    HPEN pen = CreatePen(PS_SOLID, 2, RGB(0, 120, 212));
+                    auto oldPen = SelectObject(mem, pen);
+                    auto oldBr = SelectObject(mem, GetStockObject(NULL_BRUSH));
+                    Rectangle(mem, sel.left, sel.top, sel.right, sel.bottom);
+                    SelectObject(mem, oldBr);
+                    SelectObject(mem, oldPen);
+                    DeleteObject(pen);
+                }
+            } else {
+                SetBkMode(mem, TRANSPARENT);
+                SetTextColor(mem, RGB(120, 128, 138));
+                DrawTextW(mem, self->hint_.c_str(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+
+            HBRUSH border = CreateSolidBrush(RGB(205, 212, 220));
+            FrameRect(mem, &rc, border);
+            DeleteObject(border);
+
+            BitBlt(dc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
+            SelectObject(mem, oldBmp);
+            DeleteObject(back);
+            DeleteDC(mem);
+            EndPaint(w, &ps);
+            return 0;
+        }
+        if (self->allowCrop_ && self->dib_) {
+            if (msg == WM_LBUTTONDOWN) {
+                self->dragging_ = true;
+                self->dragStart_ = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                SetCapture(w);
+                return 0;
+            }
+            if (msg == WM_MOUSEMOVE && self->dragging_) {
+                int iw = self->drawnRc_.right - self->drawnRc_.left;
+                int ih = self->drawnRc_.bottom - self->drawnRc_.top;
+                if (iw > 4 && ih > 4) {
+                    auto nx = [&](int p) { return std::clamp(double(p - self->drawnRc_.left) / iw, 0.0, 1.0); };
+                    auto ny = [&](int p) { return std::clamp(double(p - self->drawnRc_.top) / ih, 0.0, 1.0); };
+                    double x0 = nx(self->dragStart_.x), y0 = ny(self->dragStart_.y);
+                    double x1 = nx(GET_X_LPARAM(lp)), y1 = ny(GET_Y_LPARAM(lp));
+                    double l = std::min(x0, x1), t = std::min(y0, y1);
+                    double rw = std::max(0.02, std::abs(x1 - x0));
+                    double rh = std::max(0.02, std::abs(y1 - y0));
+                    if (l + rw > 1.0) rw = 1.0 - l;
+                    if (t + rh > 1.0) rh = 1.0 - t;
+                    self->region_ = {l, t, rw, rh};
+                    InvalidateRect(w, nullptr, FALSE);
+                    if (self->onRegionChanged_) self->onRegionChanged_(self->region_);
+                }
+                return 0;
+            }
+            if (msg == WM_LBUTTONUP && self->dragging_) {
+                self->dragging_ = false;
+                ReleaseCapture();
+                return 0;
+            }
+        }
+        return DefWindowProcW(w, msg, wp, lp);
+    }
+public:
+    ~PluginPreviewCanvas() { freeDib(); }
+
+    HWND create(HWND parent, int xDip, int yDip, int wDip, int hDip, bool allowCrop, const wchar_t* hint = L"未加载预览图像") {
+        HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(parent, GWLP_HINSTANCE));
+        static constexpr const wchar_t* kCls = L"MemePluginPreviewCanvasV2";
+        WNDCLASSEXW ex{sizeof(WNDCLASSEXW)};
+        if (!GetClassInfoExW(inst, kCls, &ex)) {
+            WNDCLASSEXW wc{};
+            wc.cbSize = sizeof(WNDCLASSEXW);
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = inst;
+            wc.hCursor = LoadCursorW(nullptr, IDC_CROSS);
+            wc.lpszClassName = kCls;
+            RegisterClassExW(&wc);
+        }
+        DpiScale dpi(parent);
+        allowCrop_ = allowCrop;
+        if (hint) hint_ = hint;
+        hwnd_ = CreateWindowExW(0, kCls, L"", WS_CHILD | WS_VISIBLE,
+            dpi.px(xDip), dpi.px(yDip), dpi.px(wDip), dpi.px(hDip), parent, nullptr, inst, nullptr);
+        SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+        SetWindowLongPtrW(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&PluginPreviewCanvas::proc));
+        return hwnd_;
+    }
+
+    void setBgraFrame(const MemeStudioImageBufferV2& frame) {
+        freeDib();
+        if (!frame.bgra_pixels || frame.width == 0 || frame.height == 0) {
+            if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = static_cast<LONG>(frame.width);
+        bmi.bmiHeader.biHeight = -static_cast<LONG>(frame.height);
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        void* bits = nullptr;
+        HDC sdc = GetDC(nullptr);
+        dib_ = CreateDIBSection(sdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        ReleaseDC(nullptr, sdc);
+        if (dib_ && bits) {
+            // Composite onto clean light gray matte once at load time
+            auto* dst = static_cast<uint8_t*>(bits);
+            for (uint32_t y = 0; y < frame.height; ++y) {
+                const uint8_t* srcRow = frame.bgra_pixels + static_cast<size_t>(y) * frame.stride;
+                uint8_t* dstRow = dst + static_cast<size_t>(y) * frame.width * 4;
+                for (uint32_t x = 0; x < frame.width; ++x) {
+                    uint32_t a = srcRow[x * 4 + 3];
+                    dstRow[x * 4 + 0] = static_cast<uint8_t>((srcRow[x * 4 + 0] * a + 250 * (255 - a)) / 255);
+                    dstRow[x * 4 + 1] = static_cast<uint8_t>((srcRow[x * 4 + 1] * a + 250 * (255 - a)) / 255);
+                    dstRow[x * 4 + 2] = static_cast<uint8_t>((srcRow[x * 4 + 2] * a + 250 * (255 - a)) / 255);
+                    dstRow[x * 4 + 3] = 255;
+                }
+            }
+            imgW_ = frame.width;
+            imgH_ = frame.height;
+        }
+        if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    NormalizedRect region() const noexcept { return region_; }
+    void setRegion(const NormalizedRect& r) noexcept {
+        region_ = r;
+        if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    void setOnRegionChanged(std::function<void(const NormalizedRect&)> cb) { onRegionChanged_ = std::move(cb); }
+};
+
 inline std::optional<fs::path> pickSinglePath(HWND owner, bool saveDialog, bool pickFolder, const wchar_t* title) {
     using Microsoft::WRL::ComPtr;
     ComPtr<IFileDialog> dialog;
@@ -413,6 +757,35 @@ inline std::optional<fs::path> pickSinglePath(HWND owner, bool saveDialog, bool 
     fs::path result(rawPath);
     CoTaskMemFree(rawPath);
     return result;
+}
+
+inline std::vector<fs::path> pickMultiplePaths(HWND owner, const wchar_t* title) {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) {
+        return {};
+    }
+    DWORD opts = 0;
+    dialog->GetOptions(&opts);
+    dialog->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_ALLOWMULTISELECT | FOS_NOCHANGEDIR);
+    if (title) dialog->SetTitle(title);
+    if (FAILED(dialog->Show(owner))) return {};
+    ComPtr<IShellItemArray> arr;
+    if (FAILED(dialog->GetResults(&arr)) || !arr) return {};
+    DWORD count = 0;
+    arr->GetCount(&count);
+    std::vector<fs::path> out;
+    for (DWORD i = 0; i < count; ++i) {
+        ComPtr<IShellItem> item;
+        if (SUCCEEDED(arr->GetItemAt(i, &item)) && item) {
+            PWSTR raw = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) && raw) {
+                out.emplace_back(raw);
+                CoTaskMemFree(raw);
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace meme::plugin_kit
