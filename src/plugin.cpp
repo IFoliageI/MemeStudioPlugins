@@ -1,10 +1,13 @@
 #include "memestudio_plugin_kit.hpp"
 #include "../vendor/nlohmann/json.hpp"
+#include <shellapi.h>
 #include <chrono>
 #include <limits>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -603,11 +606,403 @@ struct LoadBalancingPlugin {
     }
 };
 
+enum RoutingPanelId : int {
+    IdTakeoverCheck   = 3601,
+    IdStrategyCombo   = 3602,
+    IdServerFailCheck = 3603,
+    IdCooldownEdit    = 3604,
+    IdChannelsLv      = 3605,
+    IdAddChannelBtn   = 3606,
+    IdDelChannelBtn   = 3607,
+    IdResetHealthBtn  = 3608,
+
+    IdChEnabledCheck  = 3610,
+    IdChNameEdit      = 3611,
+    IdChUrlEdit       = 3612,
+    IdChKeyEdit       = 3613,
+    IdChModelsEdit    = 3614,
+    IdChPriorityEdit  = 3615,
+    IdChWeightEdit    = 3616,
+    IdChCostEdit      = 3617,
+
+    IdComparePrompt   = 3620,
+    IdRunCompareBtn   = 3621,
+    IdSaveRoutingBtn  = 3622,
+    IdCloseRoutingBtn = 3623
+};
+
+constexpr UINT WM_COMPARE_DONE = WM_APP + 44;
+
 struct RoutingPanelContext {
     LoadBalancingPlugin* plugin = nullptr;
-    static intptr_t MEMESTUDIO_CALL wndProc(void*, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
-        return DefWindowProcW(static_cast<HWND>(rawHwnd), msg, wp, lp);
+    HWND hwnd = nullptr;
+    HFONT font = nullptr;
+
+    HWND takeoverCheck = nullptr, strategyCombo = nullptr, serverFailCheck = nullptr, cooldownEdit = nullptr;
+    HWND channelsLv = nullptr;
+    HWND chEnabled = nullptr, chName = nullptr, chUrl = nullptr, chKey = nullptr;
+    HWND chModels = nullptr, chPriority = nullptr, chWeight = nullptr, chCost = nullptr;
+    HWND cmpPrompt = nullptr, cmpBtn = nullptr, saveBtn = nullptr, statusLabel = nullptr;
+
+    RoutingConfig draft;
+    int currentIdx = -1;
+    bool populatingDetail = false;
+
+    std::thread worker;
+    bool busy = false;
+    std::mutex mtx;
+    Json cmpReport = Json::object();
+    std::string cmpErr;
+
+    ~RoutingPanelContext() {
+        if (worker.joinable()) worker.join();
+        if (font) DeleteObject(font);
     }
+
+    static std::string joinModels(const std::vector<std::string>& models) {
+        std::string s;
+        for (size_t i = 0; i < models.size(); ++i) {
+            if (i > 0) s += ", ";
+            s += models[i];
+        }
+        return s;
+    }
+
+    static std::vector<std::string> splitModels(const std::string& raw) {
+        std::vector<std::string> out;
+        std::istringstream ss(raw);
+        std::string item;
+        while (std::getline(ss, item, ',')) {
+            std::string clean = pk::trimAscii(item);
+            if (!clean.empty()) out.push_back(std::move(clean));
+        }
+        if (out.empty()) out.push_back("gpt-image-1");
+        return out;
+    }
+
+    // Automatically syncs edited detail fields back into draft.channels[currentIdx] (fixes BUG-07!)
+    void flushCurrentChannelEdits(bool strictValidation) {
+        if (populatingDetail || currentIdx < 0 || static_cast<size_t>(currentIdx) >= draft.channels.size()) {
+            return;
+        }
+        auto& ch = draft.channels[static_cast<size_t>(currentIdx)];
+        ch.enabled = pk::isButtonChecked(chEnabled);
+        std::string nm = pk::trimAscii(pk::getWindowTextUtf8(chName));
+        if (!nm.empty()) ch.name = nm;
+        else if (strictValidation) throw pk::PluginError("渠道名称不能为空");
+
+        std::string u = pk::trimAscii(pk::getWindowTextUtf8(chUrl));
+        if (!u.empty()) ch.baseUrl = u;
+        else if (strictValidation) throw pk::PluginError("渠道接口地址不能为空");
+
+        ch.apiKey = pk::trimAscii(pk::getWindowTextUtf8(chKey));
+        ch.models = splitModels(pk::getWindowTextUtf8(chModels));
+
+        try { ch.priority = pk::parseIntField(chPriority, "优先级", 0, 99); }
+        catch (...) { if (strictValidation) throw; }
+
+        try { ch.weight = pk::parseIntField(chWeight, "权重", 1, 10000); }
+        catch (...) { if (strictValidation) throw; }
+
+        try { ch.unitCost = pk::parseDoubleField(chCost, "单位成本", 0.000001, 1000000.0); }
+        catch (...) { if (strictValidation) throw; }
+    }
+
+    void loadChannelIntoDetail(int idx) {
+        populatingDetail = true;
+        currentIdx = idx;
+        bool valid = (idx >= 0 && static_cast<size_t>(idx) < draft.channels.size());
+        for (HWND h : {chEnabled, chName, chUrl, chKey, chModels, chPriority, chWeight, chCost}) {
+            EnableWindow(h, valid ? TRUE : FALSE);
+        }
+        if (valid) {
+            const auto& ch = draft.channels[static_cast<size_t>(idx)];
+            pk::setButtonChecked(chEnabled, ch.enabled);
+            pk::setWindowTextUtf8(chName, ch.name);
+            pk::setWindowTextUtf8(chUrl, ch.baseUrl);
+            pk::setWindowTextUtf8(chKey, ch.apiKey);
+            pk::setWindowTextUtf8(chModels, joinModels(ch.models));
+            pk::setWindowTextUtf8(chPriority, std::to_string(ch.priority));
+            pk::setWindowTextUtf8(chWeight, std::to_string(ch.weight));
+            char costBuf[32]{};
+            std::snprintf(costBuf, sizeof(costBuf), "%.4g", ch.unitCost);
+            pk::setWindowTextUtf8(chCost, costBuf);
+        } else {
+            for (HWND h : {chName, chUrl, chKey, chModels, chPriority, chWeight, chCost}) {
+                pk::setWindowTextUtf8(h, "");
+            }
+        }
+        populatingDetail = false;
+    }
+
+    void refreshChannelsTable() {
+        ListView_DeleteAllItems(channelsLv);
+        Json stats = plugin->buildStatisticsJson();
+        const auto& statRows = stats.value("channels", Json::array());
+
+        for (size_t i = 0; i < draft.channels.size(); ++i) {
+            const auto& ch = draft.channels[i];
+            std::wstring wname = pk::utf8ToWideLossy((ch.enabled ? "✓ " : "○ ") + ch.name);
+            LVITEMW lvi{};
+            lvi.mask = LVIF_TEXT;
+            lvi.iItem = static_cast<int>(i);
+            lvi.pszText = wname.data();
+            ListView_InsertItem(channelsLv, &lvi);
+
+            std::wstring wurl = pk::utf8ToWideLossy(ch.baseUrl);
+            std::wstring wpw = L"P" + std::to_wstring(ch.priority) + L" / W" + std::to_wstring(ch.weight);
+            std::wstring wmod = pk::utf8ToWideLossy(joinModels(ch.models));
+
+            std::wstring wcnt = L"0 / 0 / 0";
+            std::wstring whealth = ch.enabled ? L"正常" : L"已停用";
+            if (i < statRows.size()) {
+                const auto& sr = statRows[i];
+                wcnt = std::to_wstring(sr.value("requests", 0)) + L" / " +
+                       std::to_wstring(sr.value("successes", 0)) + L" / " +
+                       std::to_wstring(sr.value("failovers", 0));
+                if (sr.value("auth_disabled", false)) whealth = L"鉴权熔断";
+                else if (sr.value("cooldown_remaining_seconds", 0) > 0) {
+                    whealth = L"冷却 (" + std::to_wstring(sr.value("cooldown_remaining_seconds", 0)) + L"s)";
+                }
+            }
+
+            ListView_SetItemText(channelsLv, static_cast<int>(i), 1, wurl.data());
+            ListView_SetItemText(channelsLv, static_cast<int>(i), 2, wpw.data());
+            ListView_SetItemText(channelsLv, static_cast<int>(i), 3, wmod.data());
+            ListView_SetItemText(channelsLv, static_cast<int>(i), 4, wcnt.data());
+            ListView_SetItemText(channelsLv, static_cast<int>(i), 5, whealth.data());
+        }
+    }
+
+    Json buildConfigPayloadFromForm() {
+        flushCurrentChannelEdits(true);
+        int cd = pk::parseIntField(cooldownEdit, "故障冷却秒数", 1, 3600);
+        bool takeover = pk::isButtonChecked(takeoverCheck);
+        std::string strat = (SendMessageW(strategyCombo, CB_GETCURSEL, 0, 0) == 1) ? "cost" : "weighted";
+        bool srvFail = pk::isButtonChecked(serverFailCheck);
+
+        Json chArr = Json::array();
+        for (const auto& c : draft.channels) {
+            chArr.push_back(Json{
+                {"name", c.name},
+                {"base_url", c.baseUrl},
+                {"api_key", c.apiKey},
+                {"api_key_env", c.apiKeyEnv},
+                {"models", c.models},
+                {"priority", c.priority},
+                {"weight", c.weight},
+                {"unit_cost", c.unitCost},
+                {"enabled", c.enabled}
+            });
+        }
+        return Json{
+            {"enabled", takeover},
+            {"strategy", strat},
+            {"server_failover", srvFail},
+            {"cooldown_seconds", cd},
+            {"channels", chArr}
+        };
+    }
+
+    static intptr_t MEMESTUDIO_CALL wndProc(void* ctx, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
+        auto* st = static_cast<RoutingPanelContext*>(ctx);
+        HWND w = static_cast<HWND>(rawHwnd);
+        if (msg == WM_CREATE) {
+            st->hwnd = w;
+            pk::PanelBuilder ui(w);
+            st->font = pk::createDpiUiFont(ui.dpi().dpi, 14);
+
+            {
+                std::lock_guard lk(st->plugin->mutex);
+                st->draft = st->plugin->config;
+            }
+
+            st->takeoverCheck = ui.checkbox(L"启用渠道池透明接管主窗口请求", IdTakeoverCheck, 16, 14, 240, 24, st->draft.takeoverEnabled);
+            ui.label(L"调度策略：", 268, 16, 78, 20);
+            st->strategyCombo = ui.combo(IdStrategyCombo, 346, 12, 160, 140, {L"平滑加权轮询 (Weighted)", L"最低累计成本 (Cost)"},
+                                         st->draft.strategy == "cost" ? 1 : 0);
+            st->serverFailCheck = ui.checkbox(L"5xx / 超时自动故障切换", IdServerFailCheck, 520, 14, 186, 24, st->draft.serverFailover);
+            ui.label(L"冷却(s)：", 714, 16, 62, 20);
+            st->cooldownEdit = ui.edit(IdCooldownEdit, 776, 12, 68, 26, std::to_string(st->draft.cooldownSeconds), ES_NUMBER);
+
+            st->channelsLv = ui.reportListView(IdChannelsLv, 16, 48, 828, 210, {
+                {L"渠道名称", 135},
+                {L"接口地址 (Base URL)", 215},
+                {L"优先级/权重", 95},
+                {L"支持模型", 145},
+                {L"请求/成功/切换", 115},
+                {L"运行状态", 95}
+            });
+
+            ui.button(L"＋ 新增渠道", IdAddChannelBtn, 16, 266, 106, 28);
+            ui.button(L"－ 删除选中", IdDelChannelBtn, 128, 266, 106, 28);
+            ui.button(L"重置冷却与统计", IdResetHealthBtn, 240, 266, 126, 28);
+
+            // Real-time bound detail editor
+            st->chEnabled = ui.checkbox(L"启用当前选中渠道", IdChEnabledCheck, 16, 306, 160, 22, true);
+            ui.label(L"渠道名称：", 190, 308, 80, 20);
+            st->chName = ui.edit(IdChNameEdit, 270, 304, 200, 26);
+            ui.label(L"API 密钥：", 486, 308, 80, 20);
+            st->chKey = ui.edit(IdChKeyEdit, 566, 304, 278, 26, "", ES_PASSWORD | ES_AUTOHSCROLL);
+
+            ui.label(L"接口地址：", 16, 344, 80, 20);
+            st->chUrl = ui.edit(IdChUrlEdit, 96, 340, 374, 26);
+            ui.label(L"模型列表：", 486, 344, 80, 20);
+            st->chModels = ui.edit(IdChModelsEdit, 566, 340, 278, 26);
+
+            ui.label(L"优先级(0最高)：", 16, 380, 108, 20);
+            st->chPriority = ui.edit(IdChPriorityEdit, 124, 376, 80, 26, "0", ES_NUMBER);
+            ui.label(L"权重(1..10000)：", 220, 380, 118, 20);
+            st->chWeight = ui.edit(IdChWeightEdit, 338, 376, 90, 26, "100", ES_NUMBER);
+            ui.label(L"单位成本：", 448, 380, 80, 20);
+            st->chCost = ui.edit(IdChCostEdit, 528, 376, 96, 26, "1.0");
+
+            // Integrated Multi-Channel Comparison Bar (ES_WANTRETURN + repeatable!)
+            ui.label(L"多渠道出图横向对比提示词（各唯一渠道独立运行，单渠道异常不连坐）：", 16, 418, 600, 20);
+            st->cmpPrompt = ui.multilineEdit(IdComparePrompt, 16, 442, 686, 68, "A cheerful cartoon mascot holding a star sticker, clean white background.", false);
+            st->cmpBtn = ui.button(L"运行多渠道对比", IdRunCompareBtn, 712, 442, 132, 34);
+
+            st->statusLabel = ui.label(L"提示：编辑渠道属性后点击「保存并应用」将自动同步当前编辑项", 16, 526, 590, 24);
+            st->saveBtn = ui.button(L"保存并应用", IdSaveRoutingBtn, 624, 520, 118, 34, true);
+            ui.button(L"关闭", IdCloseRoutingBtn, 750, 520, 94, 34, false);
+
+            ui.applyFont(st->font);
+            st->refreshChannelsTable();
+            if (!st->draft.channels.empty()) {
+                ListView_SetItemState(st->channelsLv, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                st->loadChannelIntoDetail(0);
+            } else {
+                st->loadChannelIntoDetail(-1);
+            }
+            return 0;
+        }
+        if (msg == WM_NOTIFY && !st->busy) {
+            auto* hdr = reinterpret_cast<NMHDR*>(lp);
+            if (hdr && hdr->idFrom == IdChannelsLv && hdr->code == LVN_ITEMCHANGED) {
+                auto* nmlv = reinterpret_cast<NMLISTVIEW*>(lp);
+                if ((nmlv->uChanged & LVIF_STATE) && (nmlv->uNewState & LVIS_SELECTED)) {
+                    st->flushCurrentChannelEdits(false);
+                    st->loadChannelIntoDetail(nmlv->iItem);
+                }
+            }
+        }
+        if (msg == WM_COMMAND && !st->busy) {
+            int id = LOWORD(wp);
+            if (id == IdAddChannelBtn) {
+                st->flushCurrentChannelEdits(false);
+                ChannelSpec ch;
+                ch.name = "Channel-" + std::to_string(st->draft.channels.size() + 1);
+                st->draft.channels.push_back(std::move(ch));
+                st->refreshChannelsTable();
+                int newIdx = static_cast<int>(st->draft.channels.size()) - 1;
+                ListView_SetItemState(st->channelsLv, newIdx, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                st->loadChannelIntoDetail(newIdx);
+                return 0;
+            }
+            if (id == IdDelChannelBtn) {
+                if (st->currentIdx >= 0 && static_cast<size_t>(st->currentIdx) < st->draft.channels.size()) {
+                    st->populatingDetail = true;
+                    st->draft.channels.erase(st->draft.channels.begin() + st->currentIdx);
+                    st->populatingDetail = false;
+                    st->currentIdx = -1;
+                    st->refreshChannelsTable();
+                    int nextSel = st->draft.channels.empty() ? -1 : 0;
+                    if (nextSel >= 0) {
+                        ListView_SetItemState(st->channelsLv, nextSel, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                    }
+                    st->loadChannelIntoDetail(nextSel);
+                }
+                return 0;
+            }
+            if (id == IdResetHealthBtn) {
+                {
+                    std::lock_guard lk(st->plugin->mutex);
+                    st->plugin->health.assign(st->plugin->config.channels.size(), ChannelHealth{});
+                }
+                st->refreshChannelsTable();
+                pk::setWindowTextUtf8(st->statusLabel, "已清空所有渠道的冷却计时与运行统计");
+                return 0;
+            }
+            if (id == IdRunCompareBtn) {
+                try {
+                    Json payload = st->buildConfigPayloadFromForm();
+                    st->plugin->applyNewConfig(payload, true);
+                    std::string prompt = pk::trimAscii(pk::getWindowTextUtf8(st->cmpPrompt));
+                    if (prompt.empty()) throw pk::PluginError("请填写对比测试提示词");
+
+                    if (st->worker.joinable()) st->worker.join();
+                    st->busy = true;
+                    EnableWindow(st->cmpBtn, FALSE);
+                    EnableWindow(st->saveBtn, FALSE);
+                    pk::setWindowTextUtf8(st->statusLabel, "正在各启用渠道间独立执行横向出图对比…");
+
+                    st->worker = std::thread([st, prompt = std::move(prompt)]() {
+                        Json rep;
+                        std::string err;
+                        try {
+                            rep = st->plugin->runComparison(Json{{"prompt", prompt}}, nullptr);
+                        } catch (const std::exception& e) {
+                            err = e.what();
+                        }
+                        {
+                            std::lock_guard lk(st->mtx);
+                            st->cmpReport = std::move(rep);
+                            st->cmpErr = std::move(err);
+                        }
+                        if (st->hwnd && IsWindow(st->hwnd)) PostMessageW(st->hwnd, WM_COMPARE_DONE, 0, 0);
+                    });
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"多渠道对比");
+                }
+                return 0;
+            }
+            if (id == IdSaveRoutingBtn) {
+                try {
+                    Json payload = st->buildConfigPayloadFromForm();
+                    st->plugin->applyNewConfig(payload, true);
+                    DestroyWindow(w);
+                } catch (const std::exception& e) {
+                    pk::showPanelError(w, e.what(), L"保存渠道池配置");
+                }
+                return 0;
+            }
+            if (id == IdCloseRoutingBtn || id == IDCANCEL) {
+                DestroyWindow(w);
+                return 0;
+            }
+        }
+        if (msg == WM_COMPARE_DONE) {
+            if (st->worker.joinable()) st->worker.join();
+            st->busy = false;
+            EnableWindow(st->cmpBtn, TRUE); // Repeatable — never permanently disabled!
+            EnableWindow(st->saveBtn, TRUE);
+
+            Json rep;
+            std::string err;
+            {
+                std::lock_guard lk(st->mtx);
+                rep = st->cmpReport;
+                err = st->cmpErr;
+            }
+            if (!err.empty()) {
+                pk::setWindowTextUtf8(st->statusLabel, "多渠道对比执行失败");
+                pk::showPanelError(w, err, L"多渠道对比失败");
+            } else {
+                std::string outDir = rep.value("output_directory", std::string());
+                pk::setWindowTextUtf8(st->statusLabel, "多渠道对比完成，结果与 report.json 已保存至：" + outDir);
+                if (!outDir.empty()) {
+                    ShellExecuteW(w, L"open", pk::utf8ToWideLossy(outDir).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
+            }
+            return 0;
+        }
+        if (msg == WM_CLOSE) {
+            if (!st->busy) DestroyWindow(w);
+            return 0;
+        }
+        return DefWindowProcW(w, msg, wp, lp);
+    }
+
     static void MEMESTUDIO_CALL onDestroy(void* ctx) { delete static_cast<RoutingPanelContext*>(ctx); }
 };
 
@@ -637,7 +1032,7 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
             auto* pctx = new RoutingPanelContext{self};
             if (self->host.raw()->open_panel(
                     self->host.raw()->host_ctx, "api-load-balancing", ownerHwnd,
-                    860, 620, "多渠道均衡与故障转移",
+                    860, 570, "多渠道均衡与故障转移",
                     RoutingPanelContext::wndProc, pctx, RoutingPanelContext::onDestroy) != 0) {
                 delete pctx;
                 throw pk::PluginError("无法打开渠道池配置面板");

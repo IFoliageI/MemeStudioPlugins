@@ -11,6 +11,15 @@ int wmain(int argc, wchar_t** argv) {
         meme::test_harness::LoadedPluginUnderTest plugin(argv[1], env);
         pk::HostClient helper(&env.table, plugin.desc->id);
 
+        // 0. Verify GUI panel populates full channel pool + comparison controls (never blank!)
+        MemeStudioBytesV2 guiRes{}, guiErr{};
+        if (plugin.desc->invoke_command(plugin.instance, "open-panel", "{}", nullptr, nullptr, &guiRes, &guiErr) != 0 ||
+            env.lastOpenedPanelChildCount < 22) {
+            std::cerr << "api-load-balancing panel blank! children=" << env.lastOpenedPanelChildCount << "\n";
+            return 1;
+        }
+        helper.consumeBytesToString(guiRes);
+
         static constexpr uint8_t kPng[] = {0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
         std::string b64Png = pk::base64Encode(kPng);
 
