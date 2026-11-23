@@ -1,20 +1,20 @@
 {
-  "api_version": 2,
-  "id": "memestudio.waifu2x",
-  "name": "Waifu2x 超分放大",
-  "version": "2.0.0",
-  "description": "独立的外部 waifu2x-ncnn-vulkan 整批超分滤镜插件，支持输入预超分与成品超分单进程批处理。",
-  "library": "waifu2x.dll",
-  "commands": [
-    {
-      "id": "configure",
-      "title": "Waifu2x 超分设置…",
-      "toolbar": true
-    },
-    {
-      "id": "status",
-      "title": "查看超分配置状态",
-      "toolbar": false
-    }
-  ]
+    "api_version":  2,
+    "id":  "memestudio.waifu2x",
+    "name":  "Waifu2x 超分降噪",
+    "version":  "2.0.0",
+    "description":  "调用本地 waifu2x-ncnn-vulkan 对输入参考图或生成成品执行整批超分辨率放大与降噪，动图多帧单次批处理无反复启停开销。",
+    "library":  "waifu2x.dll",
+    "commands":  [
+                     {
+                         "id":  "configure",
+                         "title":  "Waifu2x 超分…",
+                         "toolbar":  true
+                     },
+                     {
+                         "id":  "status",
+                         "title":  "查看超分配置状态",
+                         "toolbar":  false
+                     }
+                 ]
 }
