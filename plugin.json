@@ -1,9 +1,9 @@
 {
   "api_version": 2,
   "id": "memestudio.batch-convert",
-  "name": "多源批量转换",
-  "version": "2.0.0",
-  "description": "独立的多文件与目录批量表情转换队列插件，支持文件头极速扫描、防覆盖规划与单条容错续跑。",
+  "name": "批量与多人物矩阵转换",
+  "version": "2.1.0",
+  "description": "独立的多源表情 × 多人物参考矩阵批量转换工作台（支持 X×1、1×Y 单图多角色及 X×Y 笛卡尔积矩阵生成）。",
   "library": "batch-convert.dll",
   "commands": [
     {
@@ -13,12 +13,17 @@
     },
     {
       "id": "inspect-sources",
-      "title": "扫描校验素材队列",
+      "title": "极速扫描图片或目录队列",
       "toolbar": false
     },
     {
       "id": "run-batch",
-      "title": "执行批量转换队列",
+      "title": "执行多源×多人物矩阵转换",
+      "toolbar": false
+    },
+    {
+      "id": "get-ui-schema",
+      "title": "获取声明式前端界面描述",
       "toolbar": false
     }
   ]
