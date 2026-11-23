@@ -1,35 +1,35 @@
 {
-  "api_version": 2,
-  "id": "memestudio.api-load-balancing",
-  "name": "多渠道均衡与故障转移",
-  "version": "2.0.0",
-  "description": "独立的 API 渠道池负载均衡、自动故障转移与多渠道出图对比插件，通过传输拦截器透明接管请求。",
-  "library": "api-load-balancing.dll",
-  "commands": [
-    {
-      "id": "open-panel",
-      "title": "渠道池均衡…",
-      "toolbar": true
-    },
-    {
-      "id": "configure",
-      "title": "配置渠道池规则",
-      "toolbar": false
-    },
-    {
-      "id": "statistics",
-      "title": "查询渠道运行统计",
-      "toolbar": false
-    },
-    {
-      "id": "reset-health",
-      "title": "重置冷却与统计状态",
-      "toolbar": false
-    },
-    {
-      "id": "compare",
-      "title": "多渠道独立出图对比",
-      "toolbar": false
-    }
-  ]
+    "api_version":  2,
+    "id":  "memestudio.api-load-balancing",
+    "name":  "多渠道负载均衡",
+    "version":  "2.0.0",
+    "description":  "管理多个兼容接口渠道，支持按权重或累计开销自动分配请求、异常自动切换备用渠道，以及同提示词多渠道横向出图对比。",
+    "library":  "api-load-balancing.dll",
+    "commands":  [
+                     {
+                         "id":  "open-panel",
+                         "title":  "多渠道均衡…",
+                         "toolbar":  true
+                     },
+                     {
+                         "id":  "configure",
+                         "title":  "配置渠道池规则",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "statistics",
+                         "title":  "查询渠道运行统计",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "reset-health",
+                         "title":  "重置冷却与统计状态",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "compare",
+                         "title":  "多渠道独立出图对比",
+                         "toolbar":  false
+                     }
+                 ]
 }
