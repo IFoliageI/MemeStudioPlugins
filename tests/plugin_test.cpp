@@ -89,21 +89,62 @@ int wmain(int argc, wchar_t** argv) {
         }
         helper.consumeBytesToString(outErr);
 
-        // 3. Verify direct C++ -> sd-server HTTP call on 1024x1024
+        // 3. Verify native stable-diffusion.cpp `/sdcpp/v1/img_gen` + `/sdcpp/v1/jobs/<id>` job API with Turbo custom_sigmas & preview!
+        Json turboCfg{{"turbo", true}, {"session_takeover", true}};
+        plugin.desc->invoke_command(plugin.instance, "configure", turboCfg.dump().c_str(), nullptr, nullptr, &outRes, &outErr);
+        helper.consumeBytesToString(outRes);
+
         static constexpr uint8_t kPng[] = {0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
-        env.httpHandler = [&](const Json& spec, std::string_view) -> meme::test_harness::MockHttpExchange {
-            if (spec.at("url") != "http://127.0.0.1:18199/v1/images/generations") {
-                throw pk::PluginError("Unexpected sd-server URL");
+        int pollCalls = 0;
+        env.httpHandler = [&](const Json& spec, std::string_view reqBody) -> meme::test_harness::MockHttpExchange {
+            std::string url = spec.at("url").get<std::string>();
+            if (url == "http://127.0.0.1:18199/sdcpp/v1/img_gen") {
+                auto bj = Json::parse(reqBody);
+                if (bj.at("sample_params").at("sample_steps") != 8 ||
+                    !bj.at("sample_params").contains("custom_sigmas") ||
+                    bj.at("ref_images").size() != 1) {
+                    throw pk::PluginError("Unexpected /sdcpp/v1/img_gen payload: " + std::string(reqBody));
+                }
+                return {200, false, R"({"id":"job_101"})", {}};
             }
-            return {200, false, Json{{"data", Json::array({{{"b64_json", pk::base64Encode(kPng)}}})}}.dump(), {}};
+            if (url == "http://127.0.0.1:18199/sdcpp/v1/jobs/job_101") {
+                ++pollCalls;
+                std::string b64 = pk::base64Encode(kPng);
+                if (pollCalls == 1) {
+                    return {200, false, Json{{"status", "running"}, {"preview", {{"b64_json", b64}}}}.dump(), {}};
+                }
+                return {200, false, Json{
+                    {"status", "completed"},
+                    {"result", {{"images", Json::array({{{"b64_json", b64}}})}}}
+                }.dump(), {}};
+            }
+            throw pk::PluginError("Unexpected sd-server URL: " + url);
         };
+
+        int previewHits = 0;
+        MemeStudioBytesV2 refUpload{const_cast<uint8_t*>(kPng), sizeof(kPng)};
         if (plugin.desc->intercept_image_api(
-                plugin.instance, "generate", R"({"size":"1024x1024"})", R"({"prompt":"draw cat"})",
-                nullptr, 0, nullptr, nullptr, nullptr, &outRes, &outErr) != 0) {
-            std::cerr << "Direct sd-server call failed: " << helper.consumeBytesToString(outErr) << "\n";
+                plugin.instance, "edit", R"({"size":"1024x1024","stream":true})", R"({"prompt":"replace char"})",
+                &refUpload, 1, nullptr,
+                [](void* u, const uint8_t*, size_t, int32_t) { ++(*static_cast<int*>(u)); },
+                &previewHits, &outRes, &outErr) != 0) {
+            std::cerr << "Native /sdcpp/v1/img_gen call failed: " << helper.consumeBytesToString(outErr) << "\n";
             return 1;
         }
         helper.consumeBytesToVec(outRes);
+        if (pollCalls != 2 || previewHits != 1) {
+            std::cerr << "Expected 2 job polls and 1 preview callback, got polls=" << pollCalls << " previews=" << previewHits << "\n";
+            return 1;
+        }
+
+        // Verify cold-restart safety: reloading plugin from disk NEVER leaves zombie session_takeover=true when daemon isn't running!
+        meme::test_harness::LoadedPluginUnderTest restarted(argv[1], env);
+        restarted.desc->invoke_command(restarted.instance, "status", "{}", nullptr, nullptr, &outRes, &outErr);
+        Json restartSt = Json::parse(helper.consumeBytesToString(outRes));
+        if (restartSt.at("session_takeover") != false) {
+            std::cerr << "Expected cold-restart session_takeover to reset to false!\n";
+            return 1;
+        }
 
         // 4. BUG-15 Regression check: Log file containing mixed GBK bytes MUST NOT return empty string!
         std::string mixedLog = "Vulkan device initialized\n\xB9\xFA\xBC\xCA\nModel ready\n";
