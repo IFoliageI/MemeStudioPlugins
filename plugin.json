@@ -1,45 +1,45 @@
 {
-  "api_version": 2,
-  "id": "memestudio.qwen-image",
-  "name": "Qwen-Image 本地推理",
-  "version": "2.0.0",
-  "description": "原生 C++ 直管 stable-diffusion.cpp (sd-server) 的本地 Qwen-Image 多图编辑与文生图插件，全量数据读写隔离至 AppData。",
-  "library": "qwen-image.dll",
-  "commands": [
-    {
-      "id": "open-panel",
-      "title": "Qwen-Image…",
-      "toolbar": true
-    },
-    {
-      "id": "configure",
-      "title": "保存本地推理配置",
-      "toolbar": false
-    },
-    {
-      "id": "inspect-models",
-      "title": "检测本地 GGUF 模型目录",
-      "toolbar": false
-    },
-    {
-      "id": "start",
-      "title": "启动本地推理引擎",
-      "toolbar": false
-    },
-    {
-      "id": "stop",
-      "title": "停止本地推理引擎并释放显存",
-      "toolbar": false
-    },
-    {
-      "id": "read-log",
-      "title": "读取推理日志尾部",
-      "toolbar": false
-    },
-    {
-      "id": "status",
-      "title": "查询本地推理状态",
-      "toolbar": false
-    }
-  ]
+    "api_version":  2,
+    "id":  "memestudio.qwen-image",
+    "name":  "Qwen-Image 本地推理",
+    "version":  "2.0.0",
+    "description":  "托管本地 stable-diffusion.cpp (sd-server) 运行 GGUF 模型执行离线生图与修图，临时接管当前会话而不改动已保存的云端密钥。",
+    "library":  "qwen-image.dll",
+    "commands":  [
+                     {
+                         "id":  "open-panel",
+                         "title":  "本地模型…",
+                         "toolbar":  true
+                     },
+                     {
+                         "id":  "configure",
+                         "title":  "保存本地推理配置",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "inspect-models",
+                         "title":  "检测本地 GGUF 模型目录",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "start",
+                         "title":  "启动本地推理引擎",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "stop",
+                         "title":  "停止本地推理引擎并释放显存",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "read-log",
+                         "title":  "读取推理日志尾部",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "status",
+                         "title":  "查询本地推理状态",
+                         "toolbar":  false
+                     }
+                 ]
 }
