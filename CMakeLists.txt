@@ -7,10 +7,10 @@ string(JSON PLUGIN_LIB GET "${PLUGIN_MANIFEST_JSON}" "library")
 string(JSON PLUGIN_VER GET "${PLUGIN_MANIFEST_JSON}" "version")
 string(REGEX REPLACE "\\.dll$" "" PLUGIN_SLUG "${PLUGIN_LIB}")
 
-project("MemeConvertStudio-${PLUGIN_SLUG}" VERSION "${PLUGIN_VER}" LANGUAGES CXX)
+project("MemeStudioPlugins-${PLUGIN_SLUG}" VERSION "${PLUGIN_VER}" LANGUAGES CXX)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "MemeConvertStudio plugins target Windows 10 (1903+) or newer.")
+    message(FATAL_ERROR "MemeStudioPlugins plugins target Windows 10 (1903+) or newer.")
 endif()
 
 option(MEMEPLUGIN_BUILD_TESTS "Build standalone plugin contract and unit tests" ON)
