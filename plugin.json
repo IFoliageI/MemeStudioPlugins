@@ -1,35 +1,35 @@
 {
-  "api_version": 2,
-  "id": "memestudio.deepseek-harness",
-  "name": "DeepSeek Harness 调用兼容",
-  "version": "2.0.0",
-  "description": "独立的同账户 SDDL 权限保护本地命名管道 RPC 服务插件，支持能力白名单、自愈日配额与 DeepSeek Harness / Cordis 工具调用。",
-  "library": "deepseek-harness.dll",
-  "commands": [
-    {
-      "id": "open-panel",
-      "title": "Harness 权限…",
-      "toolbar": true
-    },
-    {
-      "id": "configure",
-      "title": "配置 Harness 权限与配额",
-      "toolbar": false
-    },
-    {
-      "id": "status",
-      "title": "查询桥接服务与配额状态",
-      "toolbar": false
-    },
-    {
-      "id": "stop-server",
-      "title": "停止命名管道监听",
-      "toolbar": false
-    },
-    {
-      "id": "rpc",
-      "title": "进程内执行自动化 RPC",
-      "toolbar": false
-    }
-  ]
+    "api_version":  2,
+    "id":  "memestudio.deepseek-harness",
+    "name":  "DeepSeek Harness 桥接",
+    "version":  "2.0.0",
+    "description":  "为当前登录账户下的 DeepSeek Harness / Cordis 客户端开启受权限与日配额管控的本地命名管道调用服务。",
+    "library":  "deepseek-harness.dll",
+    "commands":  [
+                     {
+                         "id":  "open-panel",
+                         "title":  "Harness 权限…",
+                         "toolbar":  true
+                     },
+                     {
+                         "id":  "configure",
+                         "title":  "配置 Harness 权限与配额",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "status",
+                         "title":  "查询桥接服务与配额状态",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "stop-server",
+                         "title":  "停止命名管道监听",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "rpc",
+                         "title":  "进程内执行自动化 RPC",
+                         "toolbar":  false
+                     }
+                 ]
 }
