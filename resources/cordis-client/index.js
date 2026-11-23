@@ -1,6 +1,6 @@
 import { createConnection } from 'node:net';
 
-export const DEFAULT_PIPE = String.raw`\\.\pipe\MemeConvertStudio.DeepSeekHarness.v1`;
+export const DEFAULT_PIPE = String.raw`\\.\pipe\MemeStudio.DeepSeekHarness.v1`;
 
 export function callStudio(operation, args = {}, { pipe = DEFAULT_PIPE, signal, timeoutMs = 600000 } = {}) {
   return new Promise((resolve, reject) => {

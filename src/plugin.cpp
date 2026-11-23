@@ -17,7 +17,7 @@ using Json = nlohmann::json;
 namespace pk = meme::plugin_kit;
 
 constexpr const char* kPluginId = "memestudio.deepseek-harness";
-constexpr const wchar_t* kDefaultPipeName = L"\\\\.\\pipe\\MemeConvertStudio.DeepSeekHarness.v1";
+constexpr const wchar_t* kDefaultPipeName = L"\\\\.\\pipe\\MemeStudio.DeepSeekHarness.v1";
 
 struct HarnessPolicy {
     bool allowInspect = true;
