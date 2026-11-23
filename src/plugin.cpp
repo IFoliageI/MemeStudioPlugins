@@ -16,7 +16,7 @@ namespace {
 using Json = nlohmann::json;
 namespace pk = meme::plugin_kit;
 
-constexpr const char* kPluginId = "memestudio.antigravity-harness";
+constexpr const char* kPluginId = "memestudio.deepseek-harness";
 constexpr const wchar_t* kDefaultPipeName = L"\\\\.\\pipe\\MemeConvertStudio.DeepSeekHarness.v1";
 
 struct HarnessPolicy {
@@ -620,8 +620,8 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
         if (cmd == "open-panel") {
             auto* pctx = new HarnessPanelContext{self};
             if (self->host.raw()->open_panel(
-                    self->host.raw()->host_ctx, "automation-harness", ownerHwnd,
-                    560, 400, "本地自动化桥接权限与配额",
+                    self->host.raw()->host_ctx, "deepseek-harness", ownerHwnd,
+                    560, 400, "DeepSeek Harness 权限与配额",
                     HarnessPanelContext::wndProc, pctx, HarnessPanelContext::onDestroy) != 0) {
                 delete pctx;
                 throw pk::PluginError("无法打开自动化权限面板");

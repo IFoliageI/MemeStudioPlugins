@@ -1,23 +1,15 @@
-# 本地命名管道自动化桥接插件 (`memestudio.antigravity-harness`)
+# DeepSeek Harness 本地自动化桥接插件 (`memestudio.deepseek-harness`)
 
-独立的外部自动化 IPC 桥接插件（C ABI v2），在插件 DLL 内部运行受当前 Windows 账户 SDDL ACL 保护的事件驱动命名管道服务端，无需在 MemeStudio 主程序中保留任何桥接代码。
+本插件作为完全独立于宿主核心的插件，提供受当前 Windows 登录用户 SID SDDL ACL 保护的重叠 I/O 命名管道（Named Pipe）服务端与自愈日配额账本，供当前账户下的 DeepSeek Harness / Cordis 客户端调用。
 
-## 安装与启用
+## 使用说明
 
-1. 将 `plugins/antigravity-harness/` 放入 `MemeStudio.exe` 同级的 `plugins/` 目录并在 **插件管理** 中启用。
-2. 点击顶部扩展栏 **自动化权限…** 勾选允许的操作范围与每日配额上限。
+1. 将 `plugins/deepseek-harness/` 放入 `MemeStudio.exe` 同级的 `plugins/` 目录并在 **插件管理** 中启用。
+2. 点击顶部扩展栏 **Harness 权限…** 按最小权限原则勾选允许的操作（默认仅允许 `inspect`，生图 `replace` 需显式授权并要求客户端请求携带 `"confirmed": true`）。
 3. 配套的 Node.js / Cordis 客户端扩展位于 `resources/cordis-client/`。
 
-## 核心特性
+## 安全与可靠性保证
 
-- **同账户内核级 ACL 隔离**：通过当前进程用户 SID 生成 `D:P(A;;GRGW;;;<SID>)` 安全描述符，拒绝跨账户与网络访问。
-- **零轮询事件驱动管道**：全链路基于 `WaitForMultipleObjects` 重叠 I/O 事件通知，卸载插件时毫秒级唤醒退出，无尾部阻塞延迟。
-- **自愈型 UTC 日配额账本**：跨自然日或系统时钟校准时自动平滑重置当日计数，且仅在实际执行任务后扣减额度。
-
-## 构建与测试
-
-```powershell
-cmake --preset windows-x64
-cmake --build --preset x64-release
-ctest --preset x64-release --output-on-failure
-```
+- **同账户 ACL 隔离**：通过 `OpenProcessToken` + `ConvertSidToStringSidW` 动态生成 `D:P(A;;GRGW;;;<CurrentUserSID>)`，拒绝跨账户与远程 SMB 访问（`PIPE_REJECT_REMOTE_CLIENTS`）。
+- **时钟回拨自愈账本**：当系统时钟修正导致历史账本 UTC 日期不等于今日 UTC 日期时自动归零重置，绝不锁死日配额。
+- **失败不扣额度 & 透明错误返回**：仅当 `run_core_replace_job` 实际成功产出结果后才计入配额；超额或底层失败均以 `{ "ok": false, "error": "..." }` 透明返回客户端。

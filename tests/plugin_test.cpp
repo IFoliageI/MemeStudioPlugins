@@ -153,7 +153,7 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
 
-        std::cout << "memestudio.antigravity-harness Named Pipe RPC & self-healing quota tests passed.\n";
+        std::cout << "memestudio.deepseek-harness Named Pipe RPC & self-healing quota tests passed.\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[FAIL] " << e.what() << "\n";

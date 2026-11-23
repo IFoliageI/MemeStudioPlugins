@@ -1,19 +1,19 @@
 {
   "api_version": 2,
-  "id": "memestudio.antigravity-harness",
-  "name": "本地命名管道自动化桥接",
+  "id": "memestudio.deepseek-harness",
+  "name": "DeepSeek Harness 调用兼容",
   "version": "2.0.0",
-  "description": "独立的同账户 SDDL 权限保护本地命名管道 RPC 服务插件，支持能力白名单、自愈日配额与外部 Agent 工具调用。",
-  "library": "antigravity-harness.dll",
+  "description": "独立的同账户 SDDL 权限保护本地命名管道 RPC 服务插件，支持能力白名单、自愈日配额与 DeepSeek Harness / Cordis 工具调用。",
+  "library": "deepseek-harness.dll",
   "commands": [
     {
       "id": "open-panel",
-      "title": "自动化权限…",
+      "title": "Harness 权限…",
       "toolbar": true
     },
     {
       "id": "configure",
-      "title": "配置自动化权限与配额",
+      "title": "配置 Harness 权限与配额",
       "toolbar": false
     },
     {

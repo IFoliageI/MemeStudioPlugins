@@ -1,7 +1,7 @@
 {
-  "name": "@memestudio/ipc-harness-client",
+  "name": "@memestudio/deepseek-harness-client",
   "version": "2.0.0",
-  "description": "Local Named Pipe client adapter for MemeStudio Automation Bridge plugin",
+  "description": "Local Named Pipe client adapter for MemeStudio DeepSeek Harness plugin",
   "private": true,
   "type": "module",
   "exports": {
