@@ -1,25 +1,25 @@
 {
-  "api_version": 2,
-  "id": "memestudio.api-parameter-test",
-  "name": "API 参数兼容性探测",
-  "version": "2.0.0",
-  "description": "独立的图像接口参数兼容性探测插件，支持自适应上传字段发现、流式与输出格式核验及脱敏报告导出。",
-  "library": "api-parameter-test.dll",
-  "commands": [
-    {
-      "id": "open-panel",
-      "title": "接口探测…",
-      "toolbar": true
-    },
-    {
-      "id": "plan",
-      "title": "生成探测用例计划",
-      "toolbar": false
-    },
-    {
-      "id": "probe",
-      "title": "执行接口参数探测",
-      "toolbar": false
-    }
-  ]
+    "api_version":  2,
+    "id":  "memestudio.api-parameter-test",
+    "name":  "接口参数兼容检测",
+    "version":  "2.0.0",
+    "description":  "自动检测当前图像接口对上传字段名（image[] / image）、尺寸、画质、输出格式及流式返回的支持情况，并可导出脱敏诊断报告。",
+    "library":  "api-parameter-test.dll",
+    "commands":  [
+                     {
+                         "id":  "open-panel",
+                         "title":  "接口检测…",
+                         "toolbar":  true
+                     },
+                     {
+                         "id":  "plan",
+                         "title":  "生成探测用例计划",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "probe",
+                         "title":  "执行接口参数探测",
+                         "toolbar":  false
+                     }
+                 ]
 }
