@@ -24,13 +24,27 @@ int wmain(int argc, wchar_t** argv) {
         auto modelDir = env.sandboxDir / L"models";
         pk::fs::create_directories(modelDir);
 
-        // Write 1 valid GGUF v3 header + 1 corrupt/partial .gguf in the same directory (BUG-27 fix!)
+        // Write 1 diffusion GGUF + 1 real general.architecture="qwen2vl" encoder GGUF (without "vl" in filename!) + 1 corrupt .gguf
         std::vector<uint8_t> validGguf{
             'G','G','U','F', 3,0,0,0,
             0,0,0,0,0,0,0,0, // tensorCount = 0
             0,0,0,0,0,0,0,0  // kvCount = 0
         };
         pk::writeFileAtomic(modelDir / L"diffusion_q4.gguf", validGguf);
+
+        // GGUF v3 with 1 KV entry: key="general.architecture" (len 20), type=8 (STRING), val="qwen2vl" (len 7)
+        std::vector<uint8_t> qwenVlGguf{
+            'G','G','U','F', 3,0,0,0,
+            0,0,0,0,0,0,0,0, // tensorCount = 0
+            1,0,0,0,0,0,0,0, // kvCount = 1
+            20,0,0,0,0,0,0,0,
+            'g','e','n','e','r','a','l','.','a','r','c','h','i','t','e','c','t','u','r','e',
+            8,0,0,0, // GGUF_TYPE_STRING = 8
+            7,0,0,0,0,0,0,0,
+            'q','w','e','n','2','v','l'
+        };
+        pk::writeFileAtomic(modelDir / L"encoder_weight.gguf", qwenVlGguf);
+
         std::vector<uint8_t> corruptGguf{'B','R','O','K','E','N'};
         pk::writeFileAtomic(modelDir / L"partial_download.gguf", corruptGguf);
 
@@ -42,7 +56,9 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
         Json inspectRes = Json::parse(helper.consumeBytesToString(outRes));
-        if (inspectRes.at("diffusion_candidates").size() != 1 || inspectRes.at("skipped_corrupt_files").size() != 1) {
+        if (inspectRes.at("diffusion_candidates").size() != 1 ||
+            inspectRes.at("llm_candidates").size() != 1 ||
+            inspectRes.at("skipped_corrupt_files").size() != 1) {
             std::cerr << "Unexpected GGUF scan report: " << inspectRes.dump() << "\n";
             return 1;
         }
@@ -103,13 +119,13 @@ int wmain(int argc, wchar_t** argv) {
         }
 
         // Confirm plugin installation stageDir stayed 100% read-only clean!
-        if (pk::fs::exists(pk::fs::path(argv[1]) / L"antigravity-config.json") ||
+        if (pk::fs::exists(pk::fs::path(argv[1]) / L"qwen-config.json") ||
             pk::fs::exists(pk::fs::path(argv[1]) / L".env")) {
             std::cerr << "Plugin polluted its installation directory!\n";
             return 1;
         }
 
-        std::cout << "memestudio.antigravity-image native runner & AppData isolation tests passed.\n";
+        std::cout << "memestudio.qwen-image native runner, GGUF qwen2vl header & AppData isolation tests passed.\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[FAIL] " << e.what() << "\n";

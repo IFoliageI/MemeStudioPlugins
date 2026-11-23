@@ -1,10 +1,10 @@
 {
   "api_version": 2,
-  "id": "memestudio.antigravity-image",
+  "id": "memestudio.qwen-image",
   "name": "Qwen-Image 本地推理",
   "version": "2.0.0",
-  "description": "原生 C++ 直管 stable-diffusion.cpp (sd-server) 的本地 GGUF 多图编辑与文生图插件，全量数据读写隔离至 AppData。",
-  "library": "antigravity-image.dll",
+  "description": "原生 C++ 直管 stable-diffusion.cpp (sd-server) 的本地 Qwen-Image 多图编辑与文生图插件，全量数据读写隔离至 AppData。",
+  "library": "qwen-image.dll",
   "commands": [
     {
       "id": "open-panel",

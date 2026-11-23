@@ -12,7 +12,7 @@ namespace {
 using Json = nlohmann::json;
 namespace pk = meme::plugin_kit;
 
-constexpr const char* kPluginId = "memestudio.antigravity-image";
+constexpr const char* kPluginId = "memestudio.qwen-image";
 
 struct QwenLocalConfig {
     pk::fs::path sdServerExe;
@@ -21,7 +21,7 @@ struct QwenLocalConfig {
     pk::fs::path vaePath;
     pk::fs::path llmPath;
     pk::fs::path mmprojPath;
-    std::string modelAlias = "antigravity-image-local";
+    std::string modelAlias = "qwen-image-local";
     uint16_t port = 18189;
     std::string bearerKey;
     bool turboPreset = false;     // Safe default: only enable 8-step/cfg=1 when Turbo model or user opts in!
@@ -236,7 +236,7 @@ struct QwenImagePlugin {
     ManagedDaemonProcess daemon;
 
     explicit QwenImagePlugin(const MemeStudioHostV2* h) : host(h, kPluginId) {
-        config.bearerKey = "antigravity-" + pk::randomHex(12);
+        config.bearerKey = "qwen-" + pk::randomHex(12);
         loadSettingsFromAppData();
     }
 
@@ -245,8 +245,8 @@ struct QwenImagePlugin {
         daemon.stop();
     }
 
-    // 100% isolated inside %LOCALAPPDATA%\MemeStudio\plugins\memestudio.antigravity-image\ (fixes BUG-15!)
-    pk::fs::path settingsFilePath() const { return host.dataDir() / L"antigravity-config.json"; }
+    // 100% isolated inside %LOCALAPPDATA%\MemeStudio\plugins\memestudio.qwen-image\ (fixes BUG-15!)
+    pk::fs::path settingsFilePath() const { return host.dataDir() / L"qwen-config.json"; }
     pk::fs::path logFilePath() const { return host.dataDir() / L"sd-server.log"; }
 
     void clearEndpointOverride() noexcept {
@@ -324,7 +324,9 @@ struct QwenImagePlugin {
                 std::string fullUtf8 = pk::wideToUtf8(entry.path().wstring());
                 if (filenameLower.find("mmproj") != std::string::npos) {
                     report["mmproj_candidates"].push_back(fullUtf8);
-                } else if (info.generalArchitecture == "antigravity2vl" || info.generalArchitecture == "antigravity3vl" ||
+                } else if (info.generalArchitecture == "qwen2vl" ||
+                           info.generalArchitecture == "qwen25vl" ||
+                           info.generalArchitecture == "qwen3vl" ||
                            info.generalArchitecture == "llama" || filenameLower.find("vl") != std::string::npos) {
                     report["llm_candidates"].push_back(fullUtf8);
                 } else {
@@ -769,14 +771,6 @@ struct LocalSdEnginePanel {
     static void MEMESTUDIO_CALL onDestroy(void* ctx) { delete static_cast<LocalSdEnginePanel*>(ctx); }
 };
 
-struct QwenPanelContext {
-    QwenImagePlugin* plugin = nullptr;
-    static intptr_t MEMESTUDIO_CALL wndProc(void*, void* rawHwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
-        return DefWindowProcW(static_cast<HWND>(rawHwnd), msg, wp, lp);
-    }
-    static void MEMESTUDIO_CALL onDestroy(void* ctx) { delete static_cast<QwenPanelContext*>(ctx); }
-};
-
 int32_t MEMESTUDIO_CALL abiCreate(const MemeStudioHostV2* host, void** outInst, MemeStudioBytesV2* outErr) {
     if (!host || !outInst || host->abi_version != MEMESTUDIO_PLUGIN_ABI_V2) return -1;
     try {
@@ -804,8 +798,8 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
             using PanelT = LocalSdEnginePanel<std::remove_pointer_t<decltype(self)>>;
             auto* pctx = new PanelT{self};
             if (self->host.raw()->open_panel(
-                    self->host.raw()->host_ctx, "local-sd-engine", ownerHwnd,
-                    780, 572, "本地 GGUF 推理引擎配置",
+                    self->host.raw()->host_ctx, "qwen-image", ownerHwnd,
+                    780, 572, "Qwen-Image 本地推理配置",
                     PanelT::wndProc, pctx, PanelT::onDestroy) != 0) {
                 delete pctx;
                 throw pk::PluginError("无法打开本地推理面板");
