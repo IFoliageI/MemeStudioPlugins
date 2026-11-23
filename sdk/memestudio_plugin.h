@@ -11,6 +11,9 @@ extern "C" {
 #define MEMESTUDIO_PLUGIN_ABI_V2 2u
 #define MEMESTUDIO_PLUGIN_ENTRY_V2 "MemeStudioGetPluginV2"
 
+/* Optional standard command ID for UI-framework-agnostic frontends (WinUI 3 / WebView2 / Qt) to query a declarative panel schema. */
+#define MEMESTUDIO_CMD_UI_SCHEMA "get-ui-schema"
+
 #ifdef _WIN32
 #define MEMESTUDIO_CALL __cdecl
 #define MEMESTUDIO_EXPORT __declspec(dllexport)
