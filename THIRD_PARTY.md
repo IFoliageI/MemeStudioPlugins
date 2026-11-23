@@ -1,6 +1,6 @@
 # 第三方开源声明 (Third-Party Notices)
 
-本仓库（`MemeConvertStudio`）及其插件分支在编译或可选外部工具集成中涉及以下开源组件：
+本仓库（`MemeStudioPlugins`）及其插件分支在编译或可选外部工具集成中涉及以下开源组件：
 
 - **nlohmann/json** (`vendor/nlohmann/json.hpp`) — 采用 MIT 许可证，版权及完整许可证文本见 `vendor/nlohmann/LICENSE.MIT`。
 - **waifu2x-ncnn-vulkan**（`plugin-waifu2x` 分支外部调用工具，不随仓库分发） — 上游项目 [nihui/waifu2x-ncnn-vulkan](https://github.com/nihui/waifu2x-ncnn-vulkan)，采用 MIT 许可证。

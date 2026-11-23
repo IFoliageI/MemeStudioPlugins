@@ -3,7 +3,7 @@
   "id": "memestudio.example",
   "name": "示例一致性增强插件",
   "version": "2.0.0",
-  "description": "MemeConvertStudio 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
+  "description": "MemeStudioPlugins 标准 C ABI v2 开发模板插件，演示实例隔离状态、提示词增强与配置命令。",
   "library": "example.dll",
   "commands": [
     {

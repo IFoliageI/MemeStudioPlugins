@@ -1,4 +1,4 @@
-# MemeConvertStudio — MemeStudio 独立插件开发脚手架与官方插件集
+# MemeStudioPlugins — MemeStudio 独立插件开发脚手架与官方插件集
 
 本仓库承载 **MemeStudio**（C ABI v2）的插件开发模板（`main` 主分支）以及从 `main` 同源派生的全部独立功能插件分支。每个插件均编译为真正独立自治的动态链接库（`.dll`），不包含任何空壳转发逻辑。
 

@@ -40,6 +40,6 @@ jobs:
       - name: Upload Clean Plugin Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: MemeConvertStudio-${{ steps.meta.outputs.slug }}-Windows-${{ matrix.arch }}
+          name: MemeStudioPlugins-${{ steps.meta.outputs.slug }}-Windows-${{ matrix.arch }}
           path: out/build/${{ matrix.arch }}/dist/Release/plugins/
           if-no-files-found: error
