@@ -1,30 +1,30 @@
 {
-  "api_version": 2,
-  "id": "memestudio.batch-convert",
-  "name": "批量与多人物矩阵转换",
-  "version": "2.1.0",
-  "description": "独立的多源表情 × 多人物参考矩阵批量转换工作台（支持 X×1、1×Y 单图多角色及 X×Y 笛卡尔积矩阵生成）。",
-  "library": "batch-convert.dll",
-  "commands": [
-    {
-      "id": "open-panel",
-      "title": "批量队列…",
-      "toolbar": true
-    },
-    {
-      "id": "inspect-sources",
-      "title": "极速扫描图片或目录队列",
-      "toolbar": false
-    },
-    {
-      "id": "run-batch",
-      "title": "执行多源×多人物矩阵转换",
-      "toolbar": false
-    },
-    {
-      "id": "get-ui-schema",
-      "title": "获取声明式前端界面描述",
-      "toolbar": false
-    }
-  ]
+    "api_version":  2,
+    "id":  "memestudio.batch-convert",
+    "name":  "批量与多角色矩阵转换",
+    "version":  "2.1.0",
+    "description":  "支持多张源表情 × 多张角色参考图的组合批量生成（涵盖多图单角色、单图多角色及 M×N 全组合矩阵），支持分角色建目录与失败自动跳过。",
+    "library":  "batch-convert.dll",
+    "commands":  [
+                     {
+                         "id":  "open-panel",
+                         "title":  "批量转换…",
+                         "toolbar":  true
+                     },
+                     {
+                         "id":  "inspect-sources",
+                         "title":  "极速扫描图片或目录队列",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "run-batch",
+                         "title":  "执行多源×多人物矩阵转换",
+                         "toolbar":  false
+                     },
+                     {
+                         "id":  "get-ui-schema",
+                         "title":  "获取声明式前端界面描述",
+                         "toolbar":  false
+                     }
+                 ]
 }
