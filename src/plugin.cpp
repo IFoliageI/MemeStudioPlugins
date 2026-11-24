@@ -18,8 +18,6 @@ using Json = nlohmann::json;
 namespace pk = meme::plugin_kit;
 
 constexpr const char* kPluginId = "memestudio.qwen-image";
-constexpr const char* kOfficialReleaseApi =
-    "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/tags/master-1106-532d2c1";
 
 struct QwenLocalConfig {
     pk::fs::path sdServerExe;
@@ -153,7 +151,7 @@ std::string describeProcessExitCode(DWORD exitCode) {
     if (exitCode == 0xC0000135u /* STATUS_DLL_NOT_FOUND */) {
         return std::string("缺少运行库 DLL (") + hexBuf + " STATUS_DLL_NOT_FOUND)。\n"
                "原因说明：所选 sd-server.exe 依赖外部 GPU 运行库（例如 ROCm 版的 libhipblaslt.dll / hipblas.dll，或 CUDA 版的 cudart64_*.dll），但同级目录未包含配套 DLL 或系统版本不匹配。\n"
-               "解决方法：请点击面板右上角「下载 Vulkan 版」自动安装免外部环境依赖的官方引擎，或将对应版本的配套运行库压缩包解压到 sd-server.exe 同目录。";
+               "解决方法：请将对应版本的配套运行库压缩包解压到 sd-server.exe 同目录，或改选免外部环境依赖的 Vulkan 版 sd-server.exe。";
     }
     if (exitCode == 0xC000007Bu /* STATUS_INVALID_IMAGE_FORMAT */) {
         return std::string("DLL 位数或架构不匹配 (") + hexBuf + " STATUS_INVALID_IMAGE_FORMAT)。请确认运行库均为 64 位版本。";
@@ -214,7 +212,7 @@ struct SdServerCapabilities {
 // Runs `sd-server.exe --help` (<200ms) BEFORE starting daemon to catch 0xC0000135 immediately & detect exact CLI flag names!
 SdServerCapabilities probeSdServerBinary(const pk::fs::path& exePath, const pk::fs::path& tempHelpLog) {
     if (exePath.empty() || !pk::fs::is_regular_file(exePath)) {
-        throw pk::PluginError("请先选择有效的 sd-server.exe 可执行文件（或点击「下载 Vulkan 版」自动安装）");
+        throw pk::PluginError("请先选择有效的 sd-server.exe 可执行文件");
     }
     if (!tempHelpLog.parent_path().empty()) {
         pk::fs::create_directories(tempHelpLog.parent_path());
@@ -641,112 +639,9 @@ struct QwenImagePlugin {
         } catch (...) {}
     }
 
-    // Downloads & verifies official Vulkan runtime archive directly into %LOCALAPPDATA%\MemeStudio\plugins\memestudio.qwen-image\runtime\ !
-    pk::fs::path downloadOfficialVulkanRuntime(MemeStudioCancelTokenV2* cancel) {
-        pk::fs::path rtBase = runtimeRootDir() / L"master-1106-532d2c1-vulkan";
-        // Reuse existing extracted sd-server.exe if already installed & passing probe!
-        if (pk::fs::is_directory(rtBase)) {
-            std::error_code ec;
-            for (const auto& entry : pk::fs::recursive_directory_iterator(rtBase, ec)) {
-                if (entry.is_regular_file(ec) && lowerMatch(entry.path().filename().wstring(), L"sd-server.exe")) {
-                    try {
-                        probeSdServerBinary(entry.path(), host.dataDir() / L"probe-help.log");
-                        return entry.path();
-                    } catch (...) {}
-                }
-            }
-        }
-
-        Json relSpec{
-            {"url", kOfficialReleaseApi},
-            {"method", "GET"},
-            {"timeout_seconds", 30},
-            {"headers", {{"User-Agent", "MemeStudio-QwenPlugin"}}}
-        };
-        uint32_t st = 0;
-        int32_t streamed = 0;
-        MemeStudioBytesV2 resp{}, err{};
-        std::string relSpecStr = relSpec.dump();
-        if (host.raw()->http_send(host.raw()->host_ctx, relSpecStr.c_str(), nullptr, 0, cancel, nullptr, nullptr, &st, &streamed, &resp, &err) != 0 || st != 200) {
-            throw pk::PluginError("查询官方 Vulkan 运行时版本信息失败：" + host.consumeBytesToString(err));
-        }
-        Json release = Json::parse(host.consumeBytesToString(resp));
-        std::string downloadUrl;
-        std::string expectedSha256;
-        for (const auto& asset : release.value("assets", Json::array())) {
-            std::string name = asset.value("name", "");
-            if (name.ends_with("-bin-win-vulkan-x64.zip")) {
-                downloadUrl = asset.value("browser_download_url", "");
-                std::string dig = asset.value("digest", "");
-                if (dig.starts_with("sha256:")) expectedSha256 = dig.substr(7);
-                break;
-            }
-        }
-        if (downloadUrl.empty()) {
-            throw pk::PluginError("未在官方发布页找到 Windows x64 Vulkan 运行时压缩包");
-        }
-
-        // GitHub release asset redirects to objects.githubusercontent.com; download via curl.exe or tar
-        pk::fs::create_directories(rtBase);
-        pk::fs::path zipFile = rtBase / L"vulkan-runtime.zip";
-        std::wstring curlCmd = L"curl.exe -fL --retry 2 -o " + quoteWinArg(zipFile.wstring()) + L" " + quoteWinArg(pk::utf8ToWideStrict(downloadUrl));
-        runSimpleSystemTool(curlCmd, rtBase);
-
-        if (!expectedSha256.empty()) {
-            auto zipBytes = pk::readFileBytes(zipFile, 256ull * 1024 * 1024);
-            std::string actualSha = pk::sha256Hex(zipBytes);
-            for (char& c : expectedSha256) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (actualSha != expectedSha256) {
-                std::error_code ec;
-                pk::fs::remove(zipFile, ec);
-                throw pk::PluginError("下载的 Vulkan 运行时 SHA-256 校验不一致，已安全丢弃");
-            }
-        }
-
-        std::wstring tarCmd = L"tar.exe -xf " + quoteWinArg(zipFile.wstring()) + L" -C " + quoteWinArg(rtBase.wstring());
-        runSimpleSystemTool(tarCmd, rtBase);
-        std::error_code rmEc;
-        pk::fs::remove(zipFile, rmEc);
-
-        for (const auto& entry : pk::fs::recursive_directory_iterator(rtBase, rmEc)) {
-            if (entry.is_regular_file(rmEc) && lowerMatch(entry.path().filename().wstring(), L"sd-server.exe")) {
-                probeSdServerBinary(entry.path(), host.dataDir() / L"probe-help.log");
-                return entry.path();
-            }
-        }
-        throw pk::PluginError("解压完成但未找到 sd-server.exe");
-    }
-
-    static bool lowerMatch(std::wstring a, std::wstring_view b) {
-        for (auto& ch : a) ch = static_cast<wchar_t>(std::towlower(ch));
-        return a == b;
-    }
-
-    static void runSimpleSystemTool(std::wstring cmdLine, const pk::fs::path& workDir) {
-        STARTUPINFOW si{sizeof(STARTUPINFOW)};
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, workDir.c_str(), &si, &pi)) {
-            throw pk::PluginError("调用系统下载/解压工具失败");
-        }
-        DWORD wrc = WaitForSingleObject(pi.hProcess, 300000);
-        DWORD code = 1;
-        if (wrc == WAIT_TIMEOUT) {
-            TerminateProcess(pi.hProcess, 1);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-            throw pk::PluginError("下载官方 Vulkan 运行时超时，请检查网络连接");
-        }
-        GetExitCodeProcess(pi.hProcess, &code);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        if (code != 0) {
-            throw pk::PluginError("下载或解压官方 Vulkan 运行时失败（退出码 " + std::to_string(code) + "）");
-        }
-    }
-
-    void startLocalServer(MemeStudioCancelTokenV2* cancel = nullptr) {
+    void startLocalServer(
+        MemeStudioCancelTokenV2* hostCancel = nullptr,
+        const std::atomic<bool>* uiCancel = nullptr) {
         QwenLocalConfig snap;
         {
             std::lock_guard lock(mutex);
@@ -800,7 +695,7 @@ struct QwenImagePlugin {
 
         // 2. Poll until HTTP port accepts connections & model finishes loading (up to 15 min for 20GB GGUF!)
         try {
-            waitUntilServerReady(snap.port, cancel);
+            waitUntilServerReady(snap.port, hostCancel, uiCancel);
         } catch (...) {
             std::lock_guard lock(mutex);
             daemon.stop();
@@ -814,32 +709,38 @@ struct QwenImagePlugin {
         syncEndpointOverrideLocked();
     }
 
-    void waitUntilServerReady(uint16_t port, MemeStudioCancelTokenV2* cancel) {
+    void waitUntilServerReady(
+        uint16_t port,
+        MemeStudioCancelTokenV2* hostCancel,
+        const std::atomic<bool>* uiCancel) {
         std::string statusUrl = "http://127.0.0.1:" + std::to_string(port) + "/sdcpp/v1/models/status";
         std::string openAiModelsUrl = "http://127.0.0.1:" + std::to_string(port) + "/v1/models";
 
         auto startedAt = std::chrono::steady_clock::now();
         while (std::chrono::steady_clock::now() - startedAt < std::chrono::minutes(15)) {
-            host.verifyNotCancelled(cancel);
+            host.verifyNotCancelled(hostCancel);
+            if (uiCancel && uiCancel->load(std::memory_order_acquire)) {
+                throw pk::PluginCancelled();
+            }
             {
                 std::lock_guard lock(mutex);
                 if (!daemon.isRunning()) {
                     DWORD code = daemon.lastExitCode();
-                    std::string tail = pk::trimAscii(pk::readFileTailLossyUtf8(logFilePath(), 4096));
+                    std::string tail = pk::trimAscii(pk::readFileTailLossyUtf8(logFilePath(), 64 * 1024));
                     std::string msg = "本地推理进程在加载模型期间退出：" + describeProcessExitCode(code);
-                    if (!tail.empty()) msg += "\n尾部日志：\n" + tail;
+                    if (!tail.empty()) msg += "\n尾部日志：\n" + tail.substr(0, 800);
                     throw pk::PluginError(msg);
                 }
             }
 
-            // Probe native /sdcpp/v1/models/status first
+            // Probe native /sdcpp/v1/models/status first (always pass genuine hostCancel or nullptr, NEVER a forged pointer!)
             Json spec{{"url", statusUrl}, {"method", "GET"}, {"timeout_seconds", 3}, {"allow_loopback_http", true}};
             std::string specStr = spec.dump();
             uint32_t httpCode = 0;
             int32_t streamed = 0;
             MemeStudioBytesV2 resp{}, err{};
             int32_t hrc = host.raw()->http_send(
-                host.raw()->host_ctx, specStr.c_str(), nullptr, 0, cancel, nullptr, nullptr, &httpCode, &streamed, &resp, &err);
+                host.raw()->host_ctx, specStr.c_str(), nullptr, 0, hostCancel, nullptr, nullptr, &httpCode, &streamed, &resp, &err);
             host.consumeBytesToString(err);
             std::string body = host.consumeBytesToString(resp);
 
@@ -852,12 +753,11 @@ struct QwenImagePlugin {
                         throw pk::PluginError("本地 GGUF 模型加载失败：" + j.value("error", body));
                     }
                 } else if (httpCode == 404) {
-                    // Newer / custom sd-server build without /sdcpp/v1/models/status -> check /v1/models
                     Json mspec{{"url", openAiModelsUrl}, {"method", "GET"}, {"timeout_seconds", 3}, {"allow_loopback_http", true}};
                     std::string mspecStr = mspec.dump();
                     MemeStudioBytesV2 mresp{}, merr{};
                     uint32_t mcode = 0;
-                    if (host.raw()->http_send(host.raw()->host_ctx, mspecStr.c_str(), nullptr, 0, cancel, nullptr, nullptr, &mcode, &streamed, &mresp, &merr) == 0 && mcode == 200) {
+                    if (host.raw()->http_send(host.raw()->host_ctx, mspecStr.c_str(), nullptr, 0, hostCancel, nullptr, nullptr, &mcode, &streamed, &mresp, &merr) == 0 && mcode == 200) {
                         host.consumeBytesToString(mresp);
                         host.consumeBytesToString(merr);
                         return;
@@ -1077,7 +977,7 @@ struct LocalSdEnginePanel {
     HWND hwnd = nullptr;
     HFONT font = nullptr;
 
-    HWND sdExe = nullptr, dlVulkanBtn = nullptr;
+    HWND sdExe = nullptr;
     HWND modelDir = nullptr, diffEdit = nullptr, vaeEdit = nullptr, llmEdit = nullptr, mmprojEdit = nullptr;
     HWND portEdit = nullptr, aliasEdit = nullptr, stepsEdit = nullptr, cfgEdit = nullptr;
     HWND turboCheck = nullptr, offloadCheck = nullptr, takeoverCheck = nullptr;
@@ -1085,13 +985,12 @@ struct LocalSdEnginePanel {
 
     std::thread bgWorker;
     std::atomic<bool> busy{false};
-    bool cancelRequested = false;
+    std::atomic<bool> cancelRequested{false};
     std::mutex resMutex;
     std::string asyncError;
-    std::string downloadedExeUtf8;
 
     ~LocalSdEnginePanel() {
-        cancelRequested = true;
+        cancelRequested.store(true, std::memory_order_release);
         if (bgWorker.joinable()) bgWorker.join();
         if (font) DeleteObject(font);
     }
@@ -1099,7 +998,6 @@ struct LocalSdEnginePanel {
     enum ControlIds : int {
         IdSdExeEdit      = 3701,
         IdPickSdExeBtn   = 3702,
-        IdDlVulkanBtn    = 3703,
         IdModelDirEdit   = 3704,
         IdPickModelDir   = 3705,
         IdScanDirBtn     = 3706,
@@ -1153,7 +1051,6 @@ struct LocalSdEnginePanel {
     void setBusyUi(bool b, std::string_view busyHint = "") {
         busy.store(b, std::memory_order_release);
         EnableWindow(startBtn, b ? FALSE : TRUE);
-        EnableWindow(dlVulkanBtn, b ? FALSE : TRUE);
         EnableWindow(saveBtn, b ? FALSE : TRUE);
         if (b) {
             SetTimer(hwnd, kLogRefreshTimerId, 500, nullptr);
@@ -1177,8 +1074,8 @@ struct LocalSdEnginePanel {
         pk::setButtonChecked(takeoverCheck, takeover);
         if (updateStatusText && !busy.load(std::memory_order_acquire)) {
             std::string stText = running
-                ? ("引擎状态：已就绪并运行中 (PID " + std::to_string(pid) + ") · 已临时接管当前会话")
-                : "引擎状态：未启动（推荐使用免环境依赖的 Vulkan 版 sd-server.exe）";
+                ? ("引擎状态：已就绪并运行中 (PID " + std::to_string(pid) + ") · 关闭本窗口不会中断后台驻留")
+                : "引擎状态：未启动 · 配置与运行日志均隔离保存在 %LOCALAPPDATA%";
             pk::setWindowTextUtf8(statusLabel, stText);
         }
 
@@ -1211,9 +1108,8 @@ struct LocalSdEnginePanel {
             }();
 
             ui.label(L"sd-server.exe 路径：", 16, 16, 145, 20);
-            st->sdExe = ui.edit(IdSdExeEdit, 162, 12, 404, 26, pk::wideToUtf8(cur.sdServerExe.wstring()));
-            ui.button(L"浏览…", IdPickSdExeBtn, 572, 12, 68, 26);
-            st->dlVulkanBtn = ui.button(L"下载 Vulkan 版", IdDlVulkanBtn, 646, 12, 118, 26);
+            st->sdExe = ui.edit(IdSdExeEdit, 162, 12, 518, 26, pk::wideToUtf8(cur.sdServerExe.wstring()));
+            ui.button(L"浏览…", IdPickSdExeBtn, 686, 12, 78, 26);
 
             ui.label(L"GGUF 模型目录：", 16, 48, 145, 20);
             st->modelDir = ui.edit(IdModelDirEdit, 162, 44, 434, 26, pk::wideToUtf8(cur.modelDirectory.wstring()));
@@ -1273,7 +1169,7 @@ struct LocalSdEnginePanel {
         if (msg == WM_COMMAND) {
             int id = LOWORD(wp);
             if (id == IdStopSrvBtn) {
-                st->cancelRequested = true;
+                st->cancelRequested.store(true, std::memory_order_release);
                 st->plugin->stopLocalServer();
                 if (!st->busy.load(std::memory_order_acquire)) {
                     st->refreshStatusAndLog();
@@ -1297,29 +1193,6 @@ struct LocalSdEnginePanel {
             if (id == IdPickVaeBtn)    { pickToEdit(st->vaeEdit, false, L"选择 VAE 权重文件"); return 0; }
             if (id == IdPickLlmBtn)    { pickToEdit(st->llmEdit, false, L"选择 LLM 文本编码器"); return 0; }
             if (id == IdPickMmprojBtn) { pickToEdit(st->mmprojEdit, false, L"选择视觉投影 mmproj"); return 0; }
-
-            if (id == IdDlVulkanBtn) {
-                if (st->bgWorker.joinable()) st->bgWorker.join();
-                st->cancelRequested = false;
-                st->setBusyUi(true, "正在从官方仓库下载并校验免依赖 Vulkan 版 sd-server 运行时…");
-                st->bgWorker = std::thread([st]() {
-                    std::string err, exeOut;
-                    try {
-                        auto p = st->plugin->downloadOfficialVulkanRuntime(
-                            reinterpret_cast<MemeStudioCancelTokenV2*>(&st->cancelRequested));
-                        exeOut = pk::wideToUtf8(p.wstring());
-                    } catch (const std::exception& e) {
-                        err = e.what();
-                    }
-                    {
-                        std::lock_guard lk(st->resMutex);
-                        st->asyncError = std::move(err);
-                        st->downloadedExeUtf8 = std::move(exeOut);
-                    }
-                    if (st->hwnd && IsWindow(st->hwnd)) PostMessageW(st->hwnd, WM_LOCAL_SD_ASYNC_DONE, 1, 0);
-                });
-                return 0;
-            }
 
             if (id == IdScanDirBtn) {
                 try {
@@ -1351,14 +1224,13 @@ struct LocalSdEnginePanel {
                     st->plugin->updateConfig(cfgPayload, true);
 
                     if (st->bgWorker.joinable()) st->bgWorker.join();
-                    st->cancelRequested = false;
+                    st->cancelRequested.store(false, std::memory_order_release);
                     st->setBusyUi(true, "正在预检运行库并加载本地 GGUF 模型权重至显存（首次加载约需 5~30 秒）…");
 
                     st->bgWorker = std::thread([st]() {
                         std::string err;
                         try {
-                            st->plugin->startLocalServer(
-                                reinterpret_cast<MemeStudioCancelTokenV2*>(&st->cancelRequested));
+                            st->plugin->startLocalServer(nullptr, &st->cancelRequested);
                         } catch (const std::exception& e) {
                             err = e.what();
                         }
@@ -1392,26 +1264,14 @@ struct LocalSdEnginePanel {
             if (st->bgWorker.joinable()) st->bgWorker.join();
             st->setBusyUi(false);
 
-            std::string err, dlExe;
+            std::string err;
             {
                 std::lock_guard lk(st->resMutex);
                 err = st->asyncError;
-                dlExe = st->downloadedExeUtf8;
             }
-            if (wp == 1 /* Vulkan download finished */) {
-                if (!err.empty()) {
-                    st->refreshStatusAndLog();
-                    pk::showPanelError(w, err, L"下载官方 Vulkan 引擎失败");
-                } else {
-                    pk::setWindowTextUtf8(st->sdExe, dlExe);
-                    pk::setWindowTextUtf8(st->statusLabel, "官方 Vulkan 版 sd-server 下载校验完成！现在可直接点击「启动引擎并接管」。");
-                    pk::showPanelInfo(w, "官方免环境依赖 Vulkan 版 sd-server.exe 已安装至 AppData 并自动填入路径！\n现在点击「启动引擎并接管」即可加载模型。", L"安装成功");
-                }
-            } else {
-                st->refreshStatusAndLog();
-                if (!err.empty()) {
-                    pk::showPanelError(w, err, L"启动本地推理服务失败");
-                }
+            st->refreshStatusAndLog();
+            if (!err.empty()) {
+                pk::showPanelError(w, err, L"启动本地推理服务失败");
             }
             return 0;
         }
@@ -1485,16 +1345,9 @@ int32_t MEMESTUDIO_CALL abiInvokeCommand(
             self->host.writeOutBytes(outResult, self->inspectModels(tmp).dump());
             return 0;
         }
-        if (cmd == "install-vulkan-runtime") {
-            auto exePath = self->downloadOfficialVulkanRuntime(cancel);
-            self->updateConfig(Json{{"sd_executable", pk::wideToUtf8(exePath.wstring())}}, true);
-            std::lock_guard lock(self->mutex);
-            self->host.writeOutBytes(outResult, self->toPublicJsonLocked().dump());
-            return 0;
-        }
         if (cmd == "start") {
             if (!args.empty()) self->updateConfig(args, true);
-            self->startLocalServer(cancel);
+            self->startLocalServer(cancel, nullptr);
             std::lock_guard lock(self->mutex);
             self->host.writeOutBytes(outResult, self->toPublicJsonLocked().dump());
             return 0;
