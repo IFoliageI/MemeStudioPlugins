@@ -734,7 +734,7 @@ struct QwenImagePlugin {
             }
 
             // Probe native /sdcpp/v1/models/status first (always pass genuine hostCancel or nullptr, NEVER a forged pointer!)
-            Json spec{{"url", statusUrl}, {"method", "GET"}, {"timeout_seconds", 3}, {"allow_loopback_http", true}};
+            Json spec{{"url", statusUrl}, {"method", "GET"}, {"timeout_seconds", 5}, {"allow_loopback_http", true}};
             std::string specStr = spec.dump();
             uint32_t httpCode = 0;
             int32_t streamed = 0;
@@ -753,7 +753,7 @@ struct QwenImagePlugin {
                         throw pk::PluginError("本地 GGUF 模型加载失败：" + j.value("error", body));
                     }
                 } else if (httpCode == 404) {
-                    Json mspec{{"url", openAiModelsUrl}, {"method", "GET"}, {"timeout_seconds", 3}, {"allow_loopback_http", true}};
+                    Json mspec{{"url", openAiModelsUrl}, {"method", "GET"}, {"timeout_seconds", 5}, {"allow_loopback_http", true}};
                     std::string mspecStr = mspec.dump();
                     MemeStudioBytesV2 mresp{}, merr{};
                     uint32_t mcode = 0;
@@ -855,13 +855,23 @@ struct QwenImagePlugin {
 
         uint32_t status = 0;
         int32_t streamed = 0;
-        MemeStudioBytesV2 respBytes{}, errBytes{};
-        int32_t hrc = host.raw()->http_send(
-            host.raw()->host_ctx, submitSpecStr.c_str(),
-            reinterpret_cast<const uint8_t*>(jobReqStr.data()), jobReqStr.size(),
-            cancel, nullptr, nullptr, &status, &streamed, &respBytes, &errBytes);
-        std::string hErr = host.consumeBytesToString(errBytes);
-        std::string submitRespStr = host.consumeBytesToString(respBytes);
+        int32_t hrc = -1;
+        std::string hErr;
+        std::string submitRespStr;
+
+        // Retry briefly if sd-server returns HTTP 503 while finishing lazy model warmup
+        for (int attempt = 0; attempt < 30; ++attempt) {
+            host.verifyNotCancelled(cancel);
+            MemeStudioBytesV2 respBytes{}, errBytes{};
+            hrc = host.raw()->http_send(
+                host.raw()->host_ctx, submitSpecStr.c_str(),
+                reinterpret_cast<const uint8_t*>(jobReqStr.data()), jobReqStr.size(),
+                cancel, nullptr, nullptr, &status, &streamed, &respBytes, &errBytes);
+            hErr = host.consumeBytesToString(errBytes);
+            submitRespStr = host.consumeBytesToString(respBytes);
+            if (hrc != 0 || status != 503) break;
+            Sleep(500);
+        }
 
         if (hrc == 0 && status >= 200 && status < 300) {
             auto submitJson = Json::parse(submitRespStr);
