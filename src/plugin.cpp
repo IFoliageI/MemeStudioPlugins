@@ -405,9 +405,9 @@ public:
             GetExitCodeProcess(process_, &lastExitCode_);
             DWORD code = lastExitCode_;
             stop();
-            std::string logTail = pk::trimAscii(pk::readFileTailLossyUtf8(logPath, 4096));
+            std::string logTail = pk::trimAscii(pk::readFileTailLossyUtf8(logPath, 64 * 1024));
             std::string reason = "sd-server 启动后立即退出：" + describeProcessExitCode(code);
-            if (!logTail.empty()) reason += "\n日志输出：\n" + logTail;
+            if (!logTail.empty()) reason += "\n日志输出：\n" + logTail.substr(0, 800);
             throw pk::PluginError(reason);
         }
     }
@@ -1182,7 +1182,7 @@ struct LocalSdEnginePanel {
             pk::setWindowTextUtf8(statusLabel, stText);
         }
 
-        std::string tail = pk::readFileTailLossyUtf8(plugin->logFilePath(), 16 * 1024);
+        std::string tail = pk::readFileTailLossyUtf8(plugin->logFilePath(), 64 * 1024);
         pk::setWindowTextUtf8(logBox, tail.empty() ? "（暂无 sd-server 运行日志）" : tail);
         SendMessageW(logBox, EM_SETSEL, 0xFFFF, 0xFFFF);
         SendMessageW(logBox, EM_SCROLLCARET, 0, 0);
