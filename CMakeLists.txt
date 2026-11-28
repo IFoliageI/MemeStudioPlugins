@@ -53,6 +53,21 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources")
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "${PLUGIN_STAGE_DIR}/resources")
 endif()
 
+# Stage optional root-level DeepSeek Harness / Cordis bundle files directly alongside plugin.json & .dll
+foreach(BUNDLE_ASSET IN ITEMS "package.json" "cordis.patch.yml" "index.js" "icon.svg")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${BUNDLE_ASSET}")
+        add_custom_command(TARGET ${PLUGIN_SLUG} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/${BUNDLE_ASSET}"
+                "${PLUGIN_STAGE_DIR}/${BUNDLE_ASSET}")
+    endif()
+endforeach()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/locale")
+    add_custom_command(TARGET ${PLUGIN_SLUG} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/locale" "${PLUGIN_STAGE_DIR}/locale")
+endif()
+
 if(MEMEPLUGIN_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin_test.cpp")
     enable_testing()
     file(GLOB EXTRA_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
