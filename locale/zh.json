@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "MemeStudio 调用桥接",
+    "description": "连接本机正在运行的 MemeStudio 检查图片、替换表情角色、提示词生图及精修修图。"
+  }
+}

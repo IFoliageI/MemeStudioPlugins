@@ -1,15 +1,14 @@
-# DeepSeek Harness 本地自动化桥接插件 (`memestudio.deepseek-harness`)
+# DeepSeek Harness 调用桥接插件 (`memestudio.deepseek-harness`)
 
-本插件作为完全独立于宿主核心的插件，提供受当前 Windows 登录用户 SID SDDL ACL 保护的重叠 I/O 命名管道（Named Pipe）服务端与自愈日配额账本，供当前账户下的 DeepSeek Harness / Cordis 客户端调用。
+`plugins/deepseek-harness/` 目录**同时**是：
+1. **MemeStudio 原生 C ABI v2 插件**（`deepseek-harness.dll` + `plugin.json`）：在主程序进程内启动受当前登录用户 SID SDDL ACL 保护的命名管道服务端与自愈日配额账本；
+2. **DeepSeek Harness (Cordis) 本地工具扩展包**（`package.json` + `cordis.patch.yml` + `index.js` + `locale/` + `icon.svg`）：向 DeepSeek Harness 注册 `memestudio_status`、`memestudio_inspect`、`memestudio_models`、`memestudio_replace`、`memestudio_draw`、`memestudio_retouch` 六项工具。
 
-## 使用说明
+## 安装与启用步骤
 
-1. 将 `plugins/deepseek-harness/` 放入 `MemeStudio.exe` 同级的 `plugins/` 目录并在 **插件管理** 中启用。
-2. 点击顶部扩展栏 **Harness 权限…** 按最小权限原则勾选允许的操作（默认仅允许 `inspect`，生图 `replace` 需显式授权并要求客户端请求携带 `"confirmed": true`）。
-3. 配套的 Node.js / Cordis 客户端扩展位于 `resources/cordis-client/`。
-
-## 安全与可靠性保证
-
-- **同账户 ACL 隔离**：通过 `OpenProcessToken` + `ConvertSidToStringSidW` 动态生成 `D:P(A;;GRGW;;;<CurrentUserSID>)`，拒绝跨账户与远程 SMB 访问（`PIPE_REJECT_REMOTE_CLIENTS`）。
-- **时钟回拨自愈账本**：当系统时钟修正导致历史账本 UTC 日期不等于今日 UTC 日期时自动归零重置，绝不锁死日配额。
-- **失败不扣额度 & 透明错误返回**：仅当 `run_core_replace_job` 实际成功产出结果后才计入配额；超额或底层失败均以 `{ "ok": false, "error": "..." }` 透明返回客户端。
+1. **在 MemeStudio 中启用服务端**：
+   将 `plugins/deepseek-harness/` 放入 `MemeStudio.exe` 同级的 `plugins/` 目录，打开右上角 **插件管理…** 勾选 **DeepSeek Harness 桥接** 并点击 **保存并应用**（启用后本机命名管道 `\\.\pipe\MemeStudio.DeepSeekHarness.v1` 将自动启动监听）。
+2. **在 DeepSeek Harness 中安装本地扩展包**：
+   打开 DeepSeek Harness 的插件管理，从本地文件夹安装 **`plugins/deepseek-harness` 整个目录**（即包含 `package.json` 与 `cordis.patch.yml` 的这一层目录，不要只选单个 `.dll` 或外层 `plugins` 目录）。
+3. **按需配置权限与额度**：
+   默认遵循最小权限原则（仅开放无计费消耗的 `inspect` 图像检查）；如需允许 Agent 调用角色替换、生图或修图，请点击 MemeStudio 顶部 **Harness 权限…** 勾选对应权限并保存（每次生成调用仍要求客户端显式传入 `confirmed: true`）。

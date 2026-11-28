@@ -147,13 +147,22 @@ int wmain(int argc, wchar_t** argv) {
         plugin.desc->invoke_command(plugin.instance, "stop-server", "{}", nullptr, nullptr, &outRes, &outErr);
         helper.consumeBytesToString(outRes);
 
-        // Verify companion Cordis client was staged into resources/cordis-client/
-        if (!pk::fs::exists(pk::fs::path(argv[1]) / L"resources" / L"cordis-client" / L"index.js")) {
-            std::cerr << "Companion Cordis client resources missing from staged dist!\n";
+        // Verify complete root-level DeepSeek Harness / Cordis bundle files were staged alongside deepseek-harness.dll!
+        pk::fs::path stageRoot(argv[1]);
+        for (const wchar_t* reqFile : {L"package.json", L"cordis.patch.yml", L"index.js", L"icon.svg", L"locale\\zh.json", L"locale\\en.json"}) {
+            if (!pk::fs::exists(stageRoot / reqFile)) {
+                std::cerr << "Missing required DSH bundle file in staged plugin directory: " << pk::wideToUtf8(reqFile) << "\n";
+                return 1;
+            }
+        }
+        auto pkgBytes = pk::readFileBytes(stageRoot / L"package.json", 64 * 1024);
+        Json pkgJson = Json::parse(pkgBytes.begin(), pkgBytes.end());
+        if (pkgJson.at("dsh").at("bundle").at("patch") != "./cordis.patch.yml") {
+            std::cerr << "Invalid dsh.bundle.patch in package.json!\n";
             return 1;
         }
 
-        std::cout << "memestudio.deepseek-harness Named Pipe RPC & self-healing quota tests passed.\n";
+        std::cout << "memestudio.deepseek-harness Named Pipe RPC, DSH bundle & self-healing quota tests passed.\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[FAIL] " << e.what() << "\n";
